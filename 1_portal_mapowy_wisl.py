@@ -59,17 +59,6 @@ m = folium.Map(
 )
 
 
-# ESA WorldCover 2021 przez WMS
-# ESA WorldCover 2021 przez WMTS v2
-folium.TileLayer(
-    tiles="https://wmts.terrascope.be/esa-worldcover-map-10m-2021-v2/default/2021-01-01/EPSG:3857/{z}/{x}/{y}.png?assets=Map&colormap_name=worldcover",
-    name="ESA WorldCover 2021",
-    attr="ESA WorldCover",
-    overlay=False,
-    min_zoom=6,
-    max_zoom=max_zoom,
-).add_to(m)
-
 # Ortofotomapa
 folium.TileLayer(
     tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -97,7 +86,7 @@ logo_html = '''
             width: 150px; 
             height: 50px;
             z-index: 9999;">
-    <img src="WISL_logo_opis.png" 
+    <img src="/data/WISL_logo_opis.png" 
          style="width: 100%; height: 100%; object-fit: contain;">
 </div>
 '''
