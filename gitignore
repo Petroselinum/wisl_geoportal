@@ -1,0 +1,26 @@
+# --- Środowisko wirtualne ---
+venv/
+.venv/
+env/
+
+# --- Python cache/build ---
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# --- VS Code ---
+.vscode/
+
+# --- Zmienne środowiskowe / sekrety ---
+.env
+
+# --- Wygenerowane mapy / wyniki (opcjonalnie) ---
+heatmap_gatunki.html
+heatmap_gatunku.html
+mapa_popup.html
+animacja_rdlp.html
+
+# --- System ---
+.DS_Store
+Thumbs.db

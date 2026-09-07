@@ -1,0 +1,7 @@
+folium
+geopandas
+pandas
+branca
+altair
+sqlmodel
+pyodbc
