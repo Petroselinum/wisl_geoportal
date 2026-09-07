@@ -1,3 +1,4 @@
+from genericpath import exists
 import folium
 from folium.plugins import HeatMap, GroupedLayerControl, MiniMap, Search
 from folium import Element
@@ -12,7 +13,6 @@ import pandas as pd
 from branca.colormap import linear
 import altair as alt
 from data import zasob_time_rdlp
-from time_heatmaps import timelapse
 from pathlib import Path
 
 #Aplikację należy uruchamiać na lokalnym serverze: python -m http.server 8000
@@ -106,7 +106,7 @@ m.get_root().html.add_child(Element(logo_html))
 
 #Nadleśnictwa
 
-nadlesnictwa = gpd.read_file('nadlesnictwa_simple.geojson')
+nadlesnictwa = gpd.read_file('data/nadlesnictwa_simple.geojson')
 
 nadlgeo = folium.GeoJson(
     data = nadlesnictwa,
@@ -156,7 +156,7 @@ popup = folium.GeoJsonPopup(fields=fields,
                             labels=True
                             )
 
-rdlp = gpd.read_file('rdlp.geojson')
+rdlp = gpd.read_file('data/rdlp.geojson')
 rdlp = rdlp.rename(columns={'NAZWA': 'RDLP'})
 
 rdlp_info = pd.DataFrame(wisl_rdlp_info(cykl))
@@ -187,7 +187,7 @@ rdlp_layer.add_to(m)
 
 #Krainy
 
-krainy = gpd.read_file('krainy.geojson')
+krainy = gpd.read_file('data/krainy.geojson')
 
 popup = folium.GeoJsonPopup(fields=['Kraina','Nazwa'],
                             localize=True,
@@ -216,7 +216,7 @@ krainy_layer.add_to(m)
 
 #województwa
 
-wojewodztwa = gpd.read_file('wojewodztwa.geojson')
+wojewodztwa = gpd.read_file('data/wojewodztwa.geojson')
 
 popup = folium.GeoJsonPopup(fields=['JPT_NAZWA_'],
                             aliases=['Województwo'],
@@ -248,7 +248,7 @@ wojewodztwa_layer.add_to(m)
 granica_collection =[]
 
 fg_kraj = folium.FeatureGroup(name='Wyłącz warstwę', show=False)
-kraj = gpd.read_file('kraj_granica.geojson')
+kraj = gpd.read_file('data/kraj_granica.geojson')
 
 folium.GeoJson(kraj,
                name = 'Ukryj aktualną warstwę',
@@ -298,7 +298,7 @@ for col, name in zip(fields[1:], names):
 # Wykresy
 
 df = zasob_time_rdlp()
-gdf = gpd.read_file('rdlp.geojson')
+gdf = gpd.read_file('data/rdlp.geojson')
 gdf_unique = gdf.drop_duplicates('NAZWA')
 
 def make_chart(rdlp_name, df):
@@ -755,6 +755,9 @@ document.addEventListener('DOMContentLoaded', function() {
 """
 
 m.get_root().html.add_child(folium.Element(scrol))
+
+if exists("wygerenowane_animacje") == False:
+    os.mkdir("wygerenowane_animacje")
 
 output_dir = Path('wygerenowane_animacje')
 output_dir.mkdir(parents=True, exist_ok=True)

@@ -100,7 +100,7 @@ def heatmap_gatunki(udzial_gat, drzewostany=True):
                     as_index=False).agg({'reprezentatywnosc_gat': 'sum'})
 
     #Łączymy z geometrią punktów pomiarowych
-    wisl_gdf = gpd.read_file("wisl_punkty.gpkg", driver="GPKG")
+    wisl_gdf = gpd.read_file("data/dwisl_punkty.gpkg", driver="GPKG")
     wisl_gdf.NR_PUNKTU = wisl_gdf.NR_PUNKTU.astype(int).astype(str).str[:-1].astype(int)
     wisl_gdf = (wisl_gdf.rename(columns={"NR_PUNKTU": "NR_TRAKTU"})
                 .drop_duplicates(subset=["NR_TRAKTU"])
@@ -167,6 +167,8 @@ if __name__ == '__main__':
                                         )
     hm.add_to(m)
 
+    if not os.path.exists('wygerenowane_animacje'):
+        os.makedirs('wygerenowane_animacje')
 
     output_dir = Path('wygerenowane_animacje')
     output_dir.mkdir(parents=True, exist_ok=True)

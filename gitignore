@@ -20,4 +20,3 @@ __pycache__/
 Thumbs.db
 
 *.html
-!wygerenowane_animacje/*.html

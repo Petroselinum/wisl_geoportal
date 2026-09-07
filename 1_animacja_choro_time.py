@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 df = zasob_time_rdlp()
-gdf = gpd.read_file('rdlp.geojson')
+gdf = gpd.read_file('data/rdlp.geojson')
 gdf = gdf.merge(df, left_on='NAZWA', right_on='rdlp', how='inner')
 # GeoJSON z ID jako nazwa RDLP (tylko unikalne geometrie)
 gdf_unique = gdf.drop_duplicates('NAZWA')[['NAZWA', 'geometry']]
@@ -36,6 +36,8 @@ fig.update_layout(
     margin=dict(l=0, r=0, t=40, b=0),
 )
 
+if not os.path.exists('wygerenowane_animacje'):
+    os.makedirs('wygerenowane_animacje')
 
 output_dir = Path('wygerenowane_animacje')
 output_dir.mkdir(parents=True, exist_ok=True)
