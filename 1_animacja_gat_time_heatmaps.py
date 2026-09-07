@@ -3,7 +3,6 @@ import folium
 import folium.plugins
 import geopandas as gpd
 import pandas as pd
-import webbrowser
 import os
 from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, engine
 from sqlmodel import Session, select, func, Integer
@@ -100,7 +99,7 @@ def heatmap_gatunki(udzial_gat, drzewostany=True):
                     as_index=False).agg({'reprezentatywnosc_gat': 'sum'})
 
     #Łączymy z geometrią punktów pomiarowych
-    wisl_gdf = gpd.read_file("data/dwisl_punkty.gpkg", driver="GPKG")
+    wisl_gdf = gpd.read_file("data/wisl_punkty.gpkg", driver="GPKG")
     wisl_gdf.NR_PUNKTU = wisl_gdf.NR_PUNKTU.astype(int).astype(str).str[:-1].astype(int)
     wisl_gdf = (wisl_gdf.rename(columns={"NR_PUNKTU": "NR_TRAKTU"})
                 .drop_duplicates(subset=["NR_TRAKTU"])

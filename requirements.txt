@@ -5,3 +5,7 @@ branca
 altair
 sqlmodel
 pyodbc
+numpy
+plotly
+pyproj
+shapely
