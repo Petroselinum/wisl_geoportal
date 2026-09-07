@@ -15,12 +15,6 @@ __pycache__/
 # --- Zmienne środowiskowe / sekrety ---
 .env
 
-# --- Wygenerowane mapy / wyniki (opcjonalnie) ---
-heatmap_gatunki.html
-heatmap_gatunku.html
-mapa_popup.html
-animacja_rdlp.html
-
 # --- System ---
 .DS_Store
 Thumbs.db
