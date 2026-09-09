@@ -1,23 +1,30 @@
+import os
 import matplotlib.pyplot as plt
+from matplotlib import patches as mpatches
+from matplotlib import lines as mlines
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 import shapely
-import cartopy.crs as ccrs
 from scipy.stats import gaussian_kde
+from shapely.geometry import Polygon
 from heatmap_data import heatmap_gatunki
 from Wisl_quert import query_udzial_gat
-from shapely.geometry import Polygon
-import os
+from matplotlib_map_utils.core.north_arrow import north_arrow
+from matplotlib_map_utils.core.scale_bar import scale_bar
+
+# Układ obliczeniowy i wyświetlania: PUWG92 (EPSG:2180) - metryczny
+CRS_OBLICZENIOWY = "EPSG:2180"
+CRS_ZAPISU = "EPSG:4326"
 
 def plot_kde_for_species(gat, cykl=4, drzewostany=True):
 
-    # 1. Inicjalizacja figury i podkładu mapy w EPSG:3857
-    fig = plt.figure(figsize=(10, 10))
-    ax = fig.add_subplot(1, 1, 1, projection=ccrs.epsg(3857))
-
-    # 2. Wczytanie granic Polski i konwersja do EPSG:3857 (metry)
-    poland = gpd.read_file("data/poland_land.geojson").to_crs(epsg=3857)
+    # 1. Inicjalizacja standardowej figury Matplotlib
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.set_aspect('equal')  # Wymuszenie proporcji 1:1 (mapa nie zostanie rozciągnięta)
+    
+    # 2. Wczytanie granic Polski i konwersja do układu metrycznego
+    poland = gpd.read_file("data/poland_land.geojson").to_crs(CRS_OBLICZENIOWY)
     poland_geom = poland.geometry.union_all()
 
     udzal_gat = query_udzial_gat(gat, cykl)
@@ -26,31 +33,34 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True):
     if len(heat_data) < 100:
         print(f"Uwaga: Zbyt mała liczba punktów ({len(heat_data)}) dla gatunku {gat}. Analiza może być niewiarygodna.")
 
-    # 3. Konwersja punktów do GeoDataFrame i układu EPSG:3857
+    # 3. Konwersja punktów do GeoDataFrame i układu EPSG:2180
     heat_data = gpd.GeoDataFrame(
         np.array(heat_data)[:, 2], 
         geometry=gpd.points_from_xy(np.array(heat_data)[:, 1], np.array(heat_data)[:, 0]), 
         crs='EPSG:4326'
-    ).to_crs(epsg=3857)
+    ).to_crs(CRS_OBLICZENIOWY)
 
     x, y = heat_data.geometry.x, heat_data.geometry.y
 
-    # 4. Tworzenie siatki przestrzennej w granicach Polski
+    # 4. Tworzenie siatki przestrzennej
     xmin, ymin, xmax, ymax = poland.total_bounds
-    X, Y = np.mgrid[xmin:xmax:500j, ymin:ymax:500j]
+    x_grid = np.linspace(xmin, xmax, 500)
+    y_grid = np.linspace(ymin, ymax, 500)
+    X, Y = np.meshgrid(x_grid, y_grid)
+
     positions = np.vstack([X.ravel(), Y.ravel()])
     values = np.vstack([x, y])
-
-    # 5. Obliczenie gęstości jądrowej (KDE) z wagami udziału gatunku
+    
+    # 5. Obliczenie gęstości jądrowej (KDE)
     kernel = gaussian_kde(values, bw_method='scott', weights=heat_data.iloc[:, 0])
-    Z = np.reshape(kernel(positions).T, X.shape)
+    Z = kernel(positions).reshape(X.shape)
 
     # 6. Przycięcie gęstości do granic Polski
     mask = shapely.contains_xy(poland_geom, X, Y)
     Z[~mask] = np.nan
 
     # ==============================================================================
-    # --- METODA 1: WYZNACZENIE PROGU NA PODSTAWIE SKUMULOWANEJ BIOMASY (95%) ---
+    # --- PROGOWANIE (95% BIOMASY) ---
     # ==============================================================================
     TARGET_COVERAGE = 0.95  
 
@@ -69,30 +79,31 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True):
     # ==============================================================================
     # 7. WIZUALIZACJA ZASIĘGU I GENEROWANIE GEOMETRII
     # ==============================================================================
-    ax.contourf(
+    # A) Pola gęstości KDE (bez parametrów transform)
+    cf = ax.contourf(
         X, Y, Z, 
         cmap=plt.cm.cool,
         levels=[prog_wartosc, np.nanmax(Z_valid)],
-        transform=ccrs.epsg(3857),
         alpha=0.5
     )
 
-    # Wypełnienie NaN zerami wyłącznie dla funkcji contour, aby uniknąć przerw na krawędziach
-    Z_contour = np.nan_to_num(Z, nan=0.0)
+    if hasattr(cf, 'get_facecolor'):
+        kde_color = cf.get_facecolor()[0]
+    else:
+        kde_color = cf.collections[0].get_facecolor()[0]
 
+    # B) Kontury KDE
+    Z_contour = np.nan_to_num(Z, nan=0.0)
     cs = ax.contour(
         X, Y, Z_contour, 
         levels=[prog_wartosc], 
         colors=['#1b5e20'], 
-        linewidths=1.5, 
-        transform=ccrs.epsg(3857)
+        linewidths=1.5
     )
 
     paths = cs.get_paths() if hasattr(cs, 'get_paths') else cs.collections[0].get_paths()
-
     polygons = []
     for path in paths:
-        # Użycie to_polygons() wymusza poprawne podziały na pod-ścieżki (ignoruje błędne łączenia)
         for poly_pts in path.to_polygons():
             if len(poly_pts) >= 3:
                 poly = Polygon(poly_pts)
@@ -100,13 +111,88 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True):
                     poly = shapely.make_valid(poly)
                 polygons.append(poly)
 
-    # Połączenie wszystkich wysepek
-    zasieg_geom = shapely.union_all(polygons)
+    zasieg_geom = shapely.union_all(polygons).buffer(0)
 
-    # Dodatkowe czyszczenie morfologiczne naprawiające mikroskopijne błędy na stykach
-    zasieg_geom = zasieg_geom.buffer(0)
+    # C) Rysowanie punktów oraz granic Polski
+    heat_data.plot(ax=ax, color='red', markersize=1, alpha=0.4)
+    poland.boundary.plot(ax=ax, color='black', linewidth=1)
+    north_arrow(ax, 
+                location="upper left", 
+                rotation={"crs": poland.crs, "reference": "center"},
+                shadow=False,
+                scale=0.4)
+    scale_bar(
+    ax, 
+    location="upper right", 
+    style="ticks", 
+    bar={"projection": poland.crs, "unit": "km", "tick_loc": "middle"},
+    labels={"loc": "above", "fontsize": 8},
+    units={"loc": "bar", "fontsize": 8},
+    )
 
-    # 8. Utworzenie nowej warstwy GeoDataFrame z atrybutami
+    # ==============================================================================
+    # 8. USTAWIENIE KADRU MAPY I STYLIZACJA (CZYSTY MATPLOTLIB)
+    # ==============================================================================
+    MARGIN_X = 20_000
+    MARGIN_Y = 20_000
+
+    ax.set_xlim(xmin - MARGIN_X, xmax + MARGIN_X)
+    ax.set_ylim(ymin - MARGIN_Y, ymax + MARGIN_Y)
+
+    # Siatka pomocnicza i etykiety osi
+    ax.grid(True, linestyle='--', alpha=0.5, color='gray')
+    ax.set_title(f"Gatunek: {gat} | Cykl: {cykl}", fontsize=12)
+    ax.set_xlabel("X [m] (PUWG92 / EPSG:2180)")
+    ax.set_ylabel("Y [m] (PUWG92 / EPSG:2180)")
+
+    # Wyłączenie zapisu surowych wartości numerycznych w notacji naukowej na osiach
+    ax.ticklabel_format(style='plain', useOffset=False)
+
+
+    # ==============================================================================
+    # 9. TWORZENIE LEGENDRY (PROXY ARTISTS)
+    # ==============================================================================
+    legend_elements = [
+        mpatches.Patch(
+            facecolor=kde_color,
+            edgecolor='#1b5e20', 
+            linewidth=1.5, 
+            alpha=0.6, 
+            label=f'Model KDE (zasięg {int(TARGET_COVERAGE*100)}%)'
+        ),
+        mlines.Line2D(
+            [], [], 
+            color='red', 
+            marker='o', 
+            linestyle='None', 
+            markersize=4, 
+            alpha=0.6, 
+            label='Powierzchnie próbne WISL'
+        ),
+        mlines.Line2D(
+            [], [], 
+            color='black', 
+            linewidth=1, 
+            label='Granica Polski'
+        )
+    ]
+
+    # Dodanie legendy w prawym górnym rogu mapy
+    ax.legend(
+        handles=legend_elements, 
+        loc='lower left', 
+        frameon=True, 
+        facecolor='white', 
+        framealpha=0.9, 
+        fontsize=9,
+        title="Legenda",
+        title_fontsize=10
+    )
+
+
+    # ==============================================================================
+    # 9. ZAPIS DO PLIKÓW
+    # ==============================================================================
     gdf_zasieg = gpd.GeoDataFrame(
         [{
             'gatunek': gat, 
@@ -115,25 +201,22 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True):
             'prog_kde': prog_wartosc
         }],
         geometry=[zasieg_geom],
-        crs='EPSG:3857'  
+        crs=CRS_OBLICZENIOWY
     )
+    
+    # Eksport do EPSG:4326 (WGS84) dla portalu webowego / Folium
+    gdf_zasieg_4326 = gdf_zasieg.to_crs(CRS_ZAPISU)
 
-    # 9. ZAPIS DO PLIKÓW
-    if not os.path.exists("KDE_wyniki"):
-        os.makedirs("KDE_wyniki")
+    if not os.path.exists("KDE_gatunki"):
+        os.makedirs("KDE_gatunki")
 
-    gdf_zasieg.to_file(f"KDE_wyniki/zasieg_{gat}_cykl_{cykl}_epsg3857.geojson", driver="GeoJSON")
+    gdf_zasieg_4326.to_file(f"KDE_gatunki/zasieg_{gat}_cykl_{cykl}_epsg4326.geojson", driver="GeoJSON")
 
-    # Siatka geograficzna z etykietami
-    gl = ax.gridlines(draw_labels=True, dms=True, linewidth=0.5, color='black', alpha=0.6, linestyle='--')
-    gl.top_labels = True
-    gl.right_labels = False
-
-    heat_data.plot(ax=ax, color='red', markersize=1, alpha=0.4)
-    poland.exterior.plot(ax=ax, color='black', linewidth=1)
+    fig.savefig(f"KDE_gatunki/mapa_{gat}_cykl_{cykl}.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
 if __name__ == "__main__":
-    gatunki = ['SO','ŚW','JD','MD','DB','BK','GB','BRZ','OL','JS','LP','JW']
+    gatunki = ['SO','ŚW','JD','MD','DB','BK','BRZ','OL']
     cykle = [1, 2, 3, 4]
     for gat in gatunki:
         for cykl in cykle:
