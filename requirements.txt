@@ -9,3 +9,7 @@ numpy
 plotly
 pyproj
 shapely
+scipy
+matplotlib
+contextily
+matplotlib_map_utils
