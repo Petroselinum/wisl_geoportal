@@ -12,6 +12,7 @@ from heatmap_data import heatmap_gatunki
 from Wisl_quert import query_udzial_gat
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
+import contextily as cx
 
 # Układ obliczeniowy i wyświetlania: PUWG92 (EPSG:2180) - metryczny
 CRS_OBLICZENIOWY = "EPSG:2180"
@@ -148,7 +149,7 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True):
     # Wyłączenie zapisu surowych wartości numerycznych w notacji naukowej na osiach
     ax.ticklabel_format(style='plain', useOffset=False)
 
-
+    cx.add_basemap(ax, crs=poland.crs, source=cx.providers.Esri.WorldGrayCanvas, alpha=1, zoom=8)
     # ==============================================================================
     # 9. TWORZENIE LEGENDRY (PROXY ARTISTS)
     # ==============================================================================
@@ -179,15 +180,15 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True):
 
     # Dodanie legendy w prawym górnym rogu mapy
     ax.legend(
-        handles=legend_elements, 
-        loc='lower left', 
-        frameon=True, 
-        facecolor='white', 
-        framealpha=0.9, 
-        fontsize=9,
-        title="Legenda",
-        title_fontsize=10
-    )
+    handles=legend_elements, 
+    loc='lower left', 
+    bbox_to_anchor=(0.01, 0.03),  # (X, Y) -> Podniesienie o 8% wysokości osi w górę
+    frameon=True, 
+    facecolor='white', 
+    framealpha=0.9, 
+    fontsize=9,
+    title="Legenda",
+    title_fontsize=10)
 
 
     # ==============================================================================

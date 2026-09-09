@@ -2,7 +2,6 @@ from genericpath import exists
 import folium
 from folium.plugins import HeatMap, GroupedLayerControl, MiniMap, Search
 from folium import Element
-import webbrowser
 import os
 from opacity import calculate_min_opacity_log
 from Wisl_quert import query_udzial_gat, query_drzewostany_uszk, martwe_drewno
