@@ -1,5 +1,6 @@
 from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, engine
 from sqlmodel import Session, select, func, cast, Float, Integer, literal_column, text
+import geopandas as gpd
 
 def query_udzial_gat(gatunek: str, nr_cykl: int = None):
     # Nawiązanie połączenia z bazą WISL
@@ -127,3 +128,13 @@ def martwe_drewno(nr_cykl: int = None):
         """)
         
         return session.execute(sql, {"nr_cykl": nr_cykl}).all()
+
+
+def query_all_wisl_plots(nr_cykl):
+    with Session(engine) as session:
+        sql = text(f'''
+            SELECT * FROM "PUNKTY_TRAKTU" AS pk
+            INNER JOIN "ADRES_POW" as ap on ap."NR_PUNKTU" = pk."NR_PUNKTU"
+            WHERE ap."NR_CYKLU" = {nr_cykl}
+        ''')
+        return session.execute(sql).all()
