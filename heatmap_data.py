@@ -3,6 +3,61 @@ import geopandas as gpd
 import numpy as np
 
 
+def _wyciagnij_nr_trakt(row):
+    """
+    Wyciąga numer traktu z wiersza wyniku zapytania SQL, niezależnie od
+    tego, czy zwraca on kolumnę NR_PUNKTU czy NR_PODPOW (obie konwencje
+    występują w bazie WISL w różnych tabelach). Rzuca czytelny błąd
+    z listą dostępnych kolumn, jeśli żadnej z nich nie znajdzie — żeby
+    nie failować cichym/mylącym AttributeError.
+    """
+    mapping = row._mapping if hasattr(row, "_mapping") else row
+    if "NR_PUNKTU" in mapping:
+        return int(str(int(mapping["NR_PUNKTU"]))[:-1])
+    if "NR_PODPOW" in mapping:
+        return int(str(int(mapping["NR_PODPOW"]))[:-3])
+    dostepne = list(mapping.keys())
+    raise KeyError(
+        "Nie znaleziono kolumny NR_PUNKTU ani NR_PODPOW w wyniku "
+        f"query_all_wisl_plots(). Dostępne kolumny: {dostepne}. "
+        "Popraw _wyciagnij_nr_trakt() w heatmap_data.py."
+    )
+
+
+def heatmap_tlo(surowe_wisl):
+    """
+    Tło — wszystkie zbadane powierzchnie WISL w danym cyklu (niezależnie
+    od gatunku czy uszkodzenia), z jednakową wagą 1.0 na trakt.
+
+    Służy jako mianownik przy liczeniu ryzyka względnego: gęstość
+    zdarzenia (np. uszkodzeń) podzielona przez gęstość tła pokazuje,
+    gdzie zdarzenie występuje częściej niż wynikałoby to z samej gęstości
+    próbkowania WISL w danym miejscu — w przeciwieństwie do surowej gęstości
+    zdarzenia, która przy zjawisku rozproszonym po całym kraju (jak
+    uszkodzenia) prawie zawsze obejmuje niemal cały kraj.
+
+    Parametr surowe_wisl: wynik query_all_wisl_plots(nr_cykl) — lista
+    wierszy SQL z (m.in.) numerem punktu/podpowierzchni.
+    """
+    nr_traktu = [_wyciagnij_nr_trakt(row) for row in surowe_wisl]
+    df_tlo = pd.DataFrame({"NR_TRAKTU": nr_traktu}).drop_duplicates(subset=["NR_TRAKTU"])
+
+    #Łączymy z geometrią punktów pomiarowych (ten sam wzorzec co w innych funkcjach heatmap_*)
+    wisl_gdf = gpd.read_file("data/wisl_punkty.gpkg", driver="GPKG")
+    wisl_gdf.NR_PUNKTU = wisl_gdf.NR_PUNKTU.astype(int).astype(str).str[:-1].astype(int)
+    wisl_gdf = (wisl_gdf.rename(columns={"NR_PUNKTU": "NR_TRAKTU"})
+                .drop_duplicates(subset=["NR_TRAKTU"])
+                .merge(df_tlo, on="NR_TRAKTU", how="inner"))
+
+    wisl_gdf = wisl_gdf.to_crs("EPSG:4326")
+
+    heat_data = []
+    for row in wisl_gdf.itertuples():
+        heat_data.append([row.geometry.y, row.geometry.x, 1.0])
+
+    return heat_data
+
+
 def heatmap_gatunki(udzial_gat, cykl = 3, drzewostany=True):
     #Tworzymy dataframe
     data_gat = pd.DataFrame(udzial_gat, 

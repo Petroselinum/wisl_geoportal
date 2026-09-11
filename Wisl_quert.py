@@ -75,20 +75,21 @@ def query_udzial_gat(gatunek: str, nr_cykl: int = None):
                                             .where(gatunek_miazszosc.c.reprezentatywnosc_gat > 0)).all()
     return gatunek_miazszosc_filtr
 
-def query_drzewostany_uszk(nr_cykl: int = None, nasil_uszk: int = None):
+def query_drzewostany_uszk(nr_cykl: int = None):
     with Session(engine) as session:
         powierzchnie_uszk = session.exec(
-                                select(ADRES_POW.NR_PODPOW,
+                                select(
+                                   ADRES_POW.NR_PUNKTU, 
+                                   ADRES_POW.NR_PODPOW,
                                    ADRES_POW.GAT_PAN_PR,
-                                   ADRES_POW.NASIL_USZK,
                                    OBL_ADRES_POW.WSP_Z,
-                                   (ADRES_POW.NASIL_USZK * OBL_ADRES_POW.WSP_Z).label('waga_oddz'),
+                                   func.coalesce(ADRES_POW.NASIL_USZK, 0).label('NASIL_USZK'),
                                    ADRES_POW.PRZYCZ_USZK) \
             .join(OBL_ADRES_POW,
                 (ADRES_POW.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
                 (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU)) \
             .where(ADRES_POW.NR_CYKLU == nr_cykl,
-                   ADRES_POW.NASIL_USZK >= nasil_uszk)
+                   ADRES_POW.R_POW_PR == 1)
         ).all()
     return powierzchnie_uszk
 
