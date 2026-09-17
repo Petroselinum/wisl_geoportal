@@ -11,6 +11,7 @@ from shapely.geometry import Polygon
 from Wisl_quert import martwe_drewno
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
+from kde_common import wymus_wspolne_pasmo
 import contextily as cx
 
 # Układ obliczeniowy i wyświetlania: PUWG92 (EPSG:2180) - metryczny
@@ -156,8 +157,13 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, percentyl: int 
     # KDE (WSPÓLNE PASMO) + KOREKTA SKALI NORMALIZACJI WAG
     # ==============================================================================
     kernel_tlo = gaussian_kde(coords, weights=waga_tlo, bw_method='scott')
-    bw_wspolne = kernel_tlo.factor
-    kernel_f = gaussian_kde(coords, weights=waga_f, bw_method=bw_wspolne)
+    # Wymuszamy TO SAMO fizyczne pasmo co dla tła - sam `factor` (kde_gat.py
+    # / stara wersja tego pliku) na to nie wystarcza, bo scipy przelicza
+    # covariance na nowo z WAŻONEGO rozrzutu przekazanych danych (tu: te same
+    # współrzędne, ale inne wagi -> inna ważona kowariancja mimo identycznego
+    # `factor`; patrz kde_common.wymus_wspolne_pasmo).
+    kernel_f = gaussian_kde(coords, weights=waga_f)
+    wymus_wspolne_pasmo(kernel_f, kernel_tlo)
 
     # scipy normalizuje f i g NIEZALEŻNIE do całki=1 - bez tej korekty iloraz
     # byłby przeskalowany przypadkowym współczynnikiem, nie prawdziwą
