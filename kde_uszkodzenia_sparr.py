@@ -43,6 +43,9 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
     else:
         df_uszk_filtr = df[df['NASIL_USZK'] > 0].copy()
 
+    # ZAŁOŻENIE DO ZWERYFIKOWANIA (ta sama waga co w kde_uszkodzenia.py):
+    # traktujemy NASIL_USZK jako wielkość liniową - jeśli to kod klasy
+    # porządkowej, a nie ilorazowej, mnożenie przez WSP_Z wymaga rewizji.
     df_uszk_filtr['iloczyn_nasilenia'] = df_uszk_filtr['WSP_Z'] * df_uszk_filtr['NASIL_USZK']
     df_uszk_trakty = df_uszk_filtr.groupby('NR_TRAKTU').agg(waga_uszk=('iloczyn_nasilenia', 'sum')).reset_index()
 
@@ -152,6 +155,17 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
     tytul_gatunek = f" | Gatunek: {gatunek}" if gatunek else ""
     nasil_opis = prog_nasil_uszk if prog_nasil_uszk is not None else 0
     ax.set_title(f"Istotne ryzyko uszkodzeń p < 0.05 (Cykl: {nr_cykl}, próg > {nasil_opis}){tytul_gatunek}", fontsize=11)
+    # Wynik eksploracyjny: p<0.05 liczone niezależnie w każdym pikselu siatki,
+    # bez korekty na wielokrotne testowanie (patrz policz_ryzyko.R) - to
+    # akceptowane w literaturze ograniczenie metody tolerance contours
+    # (Kelsall & Diggle), ale trzeba je widzieć razem z wynikiem, nie tylko
+    # w logu konsoli.
+    ax.text(
+        0.01, 0.99,
+        "Wynik eksploracyjny - bez korekty na wielokrotne testowanie",
+        transform=ax.transAxes, fontsize=7, color="#555555",
+        va="top", ha="left",
+    )
     ax.set_xlabel("X [m] (EPSG:2180)")
     ax.set_ylabel("Y [m] (EPSG:2180)")
     ax.ticklabel_format(style='plain', useOffset=False)
@@ -176,4 +190,4 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
 if __name__ == "__main__":
     cykle = [1,2,3,4]
     for cykl in cykle:
-        uszkodzenia(nr_cykl=cykl, prog_nasil_uszk=3, gatunek='ŚW')
+        uszkodzenia(nr_cykl=cykl, prog_nasil_uszk=3, gatunek='OL')

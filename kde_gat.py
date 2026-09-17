@@ -10,6 +10,7 @@ from scipy.stats import gaussian_kde
 from shapely.geometry import Polygon
 from heatmap_data import heatmap_gatunki
 from Wisl_quert import query_udzial_gat
+from kde_common import korekta_brzegowa
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
 import contextily as cx
@@ -56,8 +57,14 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True):
     kernel = gaussian_kde(values, bw_method='scott', weights=heat_data.iloc[:, 0])
     Z = kernel(positions).reshape(X.shape)
 
-    # 6. Przycięcie gęstości do granic Polski
+    # 6. Korekta brzegowa Diggle'a + przycięcie gęstości do granic Polski.
+    # W przeciwieństwie do kde_uszkodzenia.py / kde_martwe_drewno.py (iloraz
+    # dwóch gęstości o tym samym pasmie - błąd brzegowy się w przybliżeniu
+    # kasuje), tu liczymy POJEDYNCZĄ gęstość: bez korekty zasięg gatunku
+    # byłby systematycznie zaniżony blisko granicy Polski (jądro traci tam
+    # część masy poza obszar, w którym w ogóle mogłyby paść punkty WISL).
     mask = shapely.contains_xy(poland_geom, X, Y)
+    Z = Z / korekta_brzegowa(mask, x_grid, y_grid, kernel.covariance)
     Z[~mask] = np.nan
 
     # ==============================================================================

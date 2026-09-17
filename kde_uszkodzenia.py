@@ -11,6 +11,7 @@ from shapely.geometry import Polygon
 from Wisl_quert import query_drzewostany_uszk
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
+from kde_common import wymus_wspolne_pasmo
 import contextily as cx
 
 # Układ obliczeniowy i wyświetlania: PUWG92 (EPSG:2180) - metryczny
@@ -21,7 +22,12 @@ CRS_ZAPISU = "EPSG:4326"
 PERCENTYL_RYZYKA = 95
 
 # Próg minimalnego tła ustalony na 1% wartości maksymalnej tła
-PROG_MIN_TLA = 0.01 
+PROG_MIN_TLA = 0.01
+
+# Ten sam globalny próg wiarygodności modelu co w kde_martwe_drewno.py /
+# kde_gat.py - poniżej tej liczby traktów wynik jest tylko ostrzeżeniem,
+# nie blokadą (twardy próg to len(gdf_model) < 5 niżej w kodzie).
+MIN_TRAKTOW_WIARYGODNY = 100
 
 def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = None):
     res = query_drzewostany_uszk(nr_cykl=nr_cykl)
@@ -49,6 +55,11 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
         df_uszk_filtr = df[df['NASIL_USZK'] > 0].copy()
 
     # OBLICZAMY WAGĘ ILOŚCIOWĄ: Udział powierzchni * Stopień nasilenia
+    # ZAŁOŻENIE DO ZWERYFIKOWANIA: traktujemy NASIL_USZK jako wielkość
+    # liniową (klasa 4 = "4x" tyle uszkodzeń co klasa 1). Jeśli w metodyce
+    # WISL/BULiGL jest to kod klasy porządkowej (np. skala defoliacji typu
+    # ICP Forests 0-4), a nie wielkość ilorazowa, to mnożenie przez WSP_Z
+    # nie jest ściśle uzasadnione - do sprawdzenia w dokumentacji metodyki.
     df_uszk_filtr['iloczyn_nasilenia'] = df_uszk_filtr['WSP_Z'] * df_uszk_filtr['NASIL_USZK']
 
     # Sumujemy iloczyny na poziomie każdego traktu
@@ -78,6 +89,12 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
         print(f"Zbyt mało danych przestrzennych do wyznaczenia KDE (cykl {nr_cykl}, znaleziono: {len(gdf_model)}).")
         return
 
+    if len(gdf_model) < MIN_TRAKTOW_WIARYGODNY:
+        print(
+            f"Uwaga: tylko {len(gdf_model)} traktów (próg wiarygodności: "
+            f"{MIN_TRAKTOW_WIARYGODNY}). Wynik może być niewiarygodny."
+        )
+
     coords = np.vstack([gdf_model.geometry.x, gdf_model.geometry.y])
 
     # ==============================================================================
@@ -101,9 +118,11 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
     mask_uszk = gdf_model['waga_uszk'] > 0
     if mask_uszk.sum() >= 3:
         coords_uszk = coords[:, mask_uszk]
-        # WYMUSZENIE WSPÓŁCZYNNIKA WYGŁADZANIA TŁA DLA USZKODZEŃ
-        bw_factor = kernel_tlo.factor
-        kernel_uszk = gaussian_kde(coords_uszk, bw_method=bw_factor, weights=gdf_model.loc[mask_uszk, 'waga_uszk'])
+        # Wymuszamy TO SAMO fizyczne pasmo co dla tła - sam `factor` na to
+        # nie wystarcza, bo scipy przelicza covariance na nowo z rozrzutu
+        # PRZEKAZANYCH punktów (patrz kde_common.wymus_wspolne_pasmo).
+        kernel_uszk = gaussian_kde(coords_uszk, weights=gdf_model.loc[mask_uszk, 'waga_uszk'])
+        wymus_wspolne_pasmo(kernel_uszk, kernel_tlo)
         f_uszk = kernel_uszk(positions).reshape(X.shape)
     else:
         f_uszk = np.zeros_like(X)
