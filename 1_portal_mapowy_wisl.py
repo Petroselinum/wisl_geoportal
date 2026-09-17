@@ -376,29 +376,6 @@ legend_html = '''
     </div>
 </div>
 '''
-"""
-map_id = m.get_name()
-heatmap_id = heatmap.get_name()
-"""
-js_script = """
-<script>
-    var map = {map_id};
-    var heatLayer = {heatmap_id};
-
-    map.on('zoomend', function() {{
-        var currentZoom = map.getZoom();
-        if (currentZoom >= 12) {{
-            if (map.hasLayer(heatLayer)) {{
-                map.removeLayer(heatLayer);
-            }}
-        }} else {{
-            if (!map.hasLayer(heatLayer)) {{
-                map.addLayer(heatLayer);
-            }}
-        }}
-    }});
-</script>
-"""
 
 uszk_collection = []
 
@@ -509,7 +486,6 @@ for key, val in martwe.items():
     martwe_collection.append(fg_mar)
 
 
-#m.get_root().html.add_child(folium.Element(js_script))
 m.get_root().html.add_child(folium.Element(legend_html))
 m.add_child(folium.LatLngPopup())
 

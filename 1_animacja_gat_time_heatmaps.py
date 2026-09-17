@@ -1,11 +1,10 @@
 from pathlib import Path
 import folium
 import folium.plugins
-import geopandas as gpd
-import pandas as pd
 import os
 from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, engine
 from sqlmodel import Session, select, func, Integer
+from heatmap_data import heatmap_gatunki
 
 def query_udzial_gat(gatunek: str, rok_start: int, rok_end: int):
     # Nawiązanie połączenia z bazą WISL
@@ -82,46 +81,6 @@ def query_udzial_gat(gatunek: str, rok_start: int, rok_end: int):
                                             .where(gatunek_miazszosc.c.reprezentatywnosc_gat > 0)).all()
     return gatunek_miazszosc_filtr
 
-def heatmap_gatunki(udzial_gat, drzewostany=True):
-    #Tworzymy dataframe
-    data_gat = pd.DataFrame(udzial_gat, 
-                            columns=['NR_PODPOW', 'NR_CYKLU', 'UDZIAL_MIAZSZOSC', 'reprezentatywnosc_gat', 'ZADRZEW', 'SUMA_MIAZSZOSC_gat', 'SUMA_MIAZSZOSC'])
-
-    #Filtrujemy powierzchnie, gdzie udział miazszosci gatunku jest większy niż 50% - gatunek dominuje w drzewostanie (nie jest domieszką)
-    if drzewostany:
-        data_gat = data_gat.query("UDZIAL_MIAZSZOSC > 0.5 & ZADRZEW >= 0.3")
-
-    #Wyciągamy trakty
-    data_gat['NR_TRAKTU'] = data_gat['NR_PODPOW'].astype(str).str[:-3].astype(int)
-
-    #Sumujemy reprezentatywności w danym trakcie
-    data_gat_grouped = data_gat.groupby(['NR_TRAKTU', 'NR_CYKLU'],
-                    as_index=False).agg({'reprezentatywnosc_gat': 'sum'})
-
-    #Łączymy z geometrią punktów pomiarowych
-    wisl_gdf = gpd.read_file("data/wisl_punkty.gpkg", driver="GPKG")
-    wisl_gdf.NR_PUNKTU = wisl_gdf.NR_PUNKTU.astype(int).astype(str).str[:-1].astype(int)
-    wisl_gdf = (wisl_gdf.rename(columns={"NR_PUNKTU": "NR_TRAKTU"})
-                .drop_duplicates(subset=["NR_TRAKTU"])
-                .merge(data_gat_grouped, on="NR_TRAKTU", how="inner"))
-
-    #Filtrujemy wg numeru cyklu i konwertujemy na WGS 84
-    wisl_gdf = wisl_gdf.to_crs("EPSG:4326")
-
-    #Ukrywamy rzeczywistą lokalizację wisl
-    #wisl_gdf = przesuń_punkty_losowo(wisl_gdf, min_odleglosc=500, max_odleglosc=1000)
-
-    #Heatmap folium
-    heat_data = []
-    for row in wisl_gdf.iterrows():
-        lat = row[1].geometry.y 
-        lon = row[1].geometry.x 
-        weight = row[1].reprezentatywnosc_gat 
-        
-        heat_data.append([lat, lon, weight])
-    
-    return heat_data
-
 
 def timelapse(gat, drzewostany, rok_ostatni):
 
@@ -130,7 +89,9 @@ def timelapse(gat, drzewostany, rok_ostatni):
 
     for i in range(2005, rok_ostatni - 4 + 1):
         sql_res = query_udzial_gat(gat, i, i+4)
-        heat_data = heatmap_gatunki(sql_res, drzewostany=drzewostany)
+        # cykl=1: query_udzial_gat już filtruje wg zakresu lat (rok_start-rok_end),
+        # więc nie chcemy dodatkowego obcinania wg NR_CYKLU
+        heat_data = heatmap_gatunki(sql_res, cykl=1, drzewostany=drzewostany)
         heat_data_time.append(heat_data)
         heat_data_time_index.append(str(i) + "-" + str(i+4))
     
