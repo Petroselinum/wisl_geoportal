@@ -174,6 +174,6 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
     print(f"Zakończono pomyślnie. Wyniki z testem sparr zapisano dla cyklu {nr_cykl}.")
 
 if __name__ == "__main__":
-    cykle = [1]
+    cykle = [1,2,3,4]
     for cykl in cykle:
-        uszkodzenia(nr_cykl=cykl, prog_nasil_uszk=3, gatunek='BK')
+        uszkodzenia(nr_cykl=cykl, prog_nasil_uszk=3, gatunek='ŚW')

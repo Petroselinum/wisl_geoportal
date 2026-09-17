@@ -1,6 +1,7 @@
 from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, engine
 from sqlmodel import Session, select, func, cast, Float, Integer, literal_column, text
 import geopandas as gpd
+import math
 
 def query_udzial_gat(gatunek: str, nr_cykl: int = None):
     # Nawiązanie połączenia z bazą WISL
@@ -96,6 +97,25 @@ def query_drzewostany_uszk(nr_cykl: int = None):
 #Martwe - średnia ważona wsp Z w trakcie
 
 def martwe_drewno(nr_cykl: int = None):
+    # MIAZSZOSC w OBL_DRZEWA_MARTWE to surowa objętość zmierzona na kole
+    # próbnym o stałym promieniu 11,28 m (pole = pi*11,28^2 ~= 399,73 m^2 =
+    # ~0,04 ha). WSP_Z to udział podpowierzchni w pełnej powierzchni próbnej
+    # (nie zawsze 1,0 - schematyczna siatka WISL: czasem tylko część
+    # podpowierzchni faktycznie wypada w lesie). WSP_Z * pole_kola to więc
+    # RZECZYWIŚCIE REPREZENTOWANA powierzchnia danej podpowierzchni - nie
+    # waga, przez którą mnoży się samą objętość.
+    #
+    # Poprawny estymator gęstości (m3/ha) na trakt to:
+    #   SUMA surowej objętości / (SUMA_WSP_Z * pole_jednego_kola_w_ha)
+    # czyli "całkowita zmierzona objętość" / "całkowita reprezentowana
+    # powierzchnia" - NIE średnia ważona objętości przez WSP_Z (to dwie
+    # różne rzeczy: ważenie objętości przez WSP_Z przed uśrednieniem
+    # systematycznie zaniża wkład podpowierzchni o niskiej reprezentatywności,
+    # nawet jeśli akurat na nich znaleziono dużo martwego drewna - sprawdzone
+    # przykładem liczbowym: 66,7 vs 133,4 m3/ha dla tych samych danych,
+    # w zależności od tego, która wersja wzoru jest użyta).
+    PRZELICZNIK_NA_HEKTAR = 10000.0 / (math.pi * 11.28 ** 2)
+
     with Session(engine) as session:
         sql = text("""
             WITH z_pow_les AS (
@@ -111,24 +131,25 @@ def martwe_drewno(nr_cykl: int = None):
                 SELECT
                     a.NR_PODPOW / 1000 AS NR_Traktu,
                     d.TYP,
-                    CAST(SUM(od.MIAZSZOSC) * a.WSP_Z AS FLOAT) AS MIAZSZOSC_martwe_pow
+                    CAST(SUM(od.MIAZSZOSC) AS FLOAT) AS MIAZSZOSC_martwe_pow
                 FROM DRZEWA_MARTWE d
                 JOIN OBL_DRZEWA_MARTWE od ON d.ID = od.ID
                 JOIN OBL_ADRES_POW a ON d.NR_PODPOW = a.NR_PODPOW
                                      AND d.NR_CYKLU = a.NR_CYKLU
                 WHERE d.NR_CYKLU = :nr_cykl
-                GROUP BY a.NR_PODPOW / 1000, d.NR_PODPOW, d.TYP, a.WSP_Z
+                GROUP BY a.NR_PODPOW / 1000, d.NR_PODPOW, d.TYP
             )
             SELECT
-                m.NR_Traktu,
+                z.NR_Traktu,
                 m.TYP,
-                SUM(m.MIAZSZOSC_martwe_pow) / z.SUMA_WSP_Z AS SR_MIAZSZOSC
-            FROM martwe m
-            JOIN z_pow_les z ON m.NR_Traktu = z.NR_Traktu
-            GROUP BY m.NR_Traktu, m.TYP, z.SUMA_WSP_Z
+                (COALESCE(SUM(m.MIAZSZOSC_martwe_pow), 0) / z.SUMA_WSP_Z) * :przelicznik AS SR_MIAZSZOSC,
+                z.SUMA_WSP_Z
+            FROM z_pow_les z
+            LEFT JOIN martwe m ON m.NR_Traktu = z.NR_Traktu
+            GROUP BY z.NR_Traktu, m.TYP, z.SUMA_WSP_Z
         """)
         
-        return session.execute(sql, {"nr_cykl": nr_cykl}).all()
+        return session.execute(sql, {"nr_cykl": nr_cykl, "przelicznik": PRZELICZNIK_NA_HEKTAR}).all()
 
 
 def query_all_wisl_plots(nr_cykl):
