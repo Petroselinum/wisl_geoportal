@@ -2,16 +2,22 @@ import os
 import matplotlib.pyplot as plt
 from matplotlib import patches as mpatches
 from matplotlib import lines as mlines
+from matplotlib import patheffects
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 import shapely
 from scipy.stats import gaussian_kde
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, MultiPolygon
 from Wisl_quert import martwe_drewno
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
-from kde_common import wymus_wspolne_pasmo
+from kde_common import (
+    wymus_wspolne_pasmo,
+    TekstWzdlugKonturu,
+    wytnij_fragment_konturu,
+    dlugosc_tekstu_w_danych,
+)
 import contextily as cx
 
 # Układ obliczeniowy i wyświetlania: PUWG92 (EPSG:2180) - metryczny
@@ -47,26 +53,42 @@ CRS_ZAPISU = "EPSG:4326"
 # syntetycznych ze znanym trendem - bez korekty błąd był ~20-krotny,
 # z korektą <5%.
 #
-# Percentyl progu (żeby zaznaczyć "obszary najbardziej zasobne") liczony
-# jest na WYNIKU (już unormowanej lokalnej średniej), nie na surowej
-# gęstości f - to jest różnica względem błędu, który popełniliśmy
-# najpierw przy uszkodzeniach (percentyl na surowej gęstości dawał
-# pokrycie ~90% kraju). Tutaj percentyl na już poprawnie skalowanej
-# średniej jest sensowny i porównywalny z tym, jak BULiGL raportuje
-# zasobność w tabelach (m3/ha), tylko w wersji ciągłej zamiast podziału
-# na województwa.
+# Progi zaznaczające "obszary najbardziej zasobne" są liczone na WYNIKU
+# (już unormowanej lokalnej średniej), nie na surowej gęstości f - to
+# jest różnica względem błędu, który popełniliśmy najpierw przy
+# uszkodzeniach (próg na surowej gęstości dawał pokrycie ~90% kraju).
+# Tutaj są to stałe wartości w m3/ha (PROGI_ZASOBNOSCI_M3HA), a nie
+# percentyle rozkładu w danym cyklu - dzięki temu są porównywalne z tym,
+# jak BULiGL raportuje zasobność w tabelach (m3/ha), i między cyklami.
 CRS_OBLICZENIOWY_ = CRS_OBLICZENIOWY  # (alias niepotrzebny, zostawiony dla czytelności importu wyżej)
 
-PERCENTYL_ZASOBNOSCI = 95  # "top 5% kraju pod względem lokalnej średniej zasobności"
 PROG_MIN_TLA = 0.01        # poniżej tego ułamka maksimum gęstości tła nie ufamy ilorazowi (brzegi)
 MIN_TRAKTOW_WIARYGODNY = 100  # globalny próg wiarygodności modelu (ten sam co przy KDE gatunków)
 
+# Progi STAŁE (m3/ha), a nie percentyle rozkładu w danym cyklu - percentyle
+# dają różne wartości progowe (i różne kolory) dla tej samej "kategorii" w
+# różnych cyklach (np. top 20% to 3.5 m3/ha w cyklu 1, ale 13.8 m3/ha w
+# cyklu 4 - patrz dane historyczne), co czyni mapy między cyklami
+# nieporównywalnymi. Stałe progi >5/>10/>15/>20 m3/ha rozwiązują to.
+PROGI_ZASOBNOSCI_M3HA = [5, 10, 15, 20]
 
-def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, percentyl: int = PERCENTYL_ZASOBNOSCI):
+# Kolor przypisany NA STAŁE do konkretnej wartości progu (nie do jej
+# pozycji w rankingu, jak dawniej przy percentylach) - dzięki temu pasmo
+# ">10 m3/ha" ma zawsze ten sam odcień niezależnie od cyklu i od tego, ile
+# innych progów akurat rysujemy, co pozwala porównywać mapy wizualnie.
+KOLORY_PROGOW_M3HA = {
+    5: plt.cm.YlOrBr(0.30),
+    10: plt.cm.YlOrBr(0.50),
+    15: plt.cm.YlOrBr(0.70),
+    20: plt.cm.YlOrBr(0.92),
+}
+
+
+def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[float] = PROGI_ZASOBNOSCI_M3HA):
     """
     Lokalna, wygładzona przestrzennie średnia zasobność martwego drewna
-    (m3/ha), z zaznaczeniem obszarów o najwyższej zasobności (górny
-    percentyl rozkładu tej średniej).
+    (m3/ha), z zaznaczeniem obszarów przekraczających kilka stałych progów
+    zasobności (domyślnie >5, >10, >15, >20 m3/ha).
 
     Wisl_quert.martwe_drewno(nr_cykl) zwraca dane per trakt i per TYP
     martwego drewna (1-3 leżące, 4 posusz, 5 złom — patrz dokumentacja
@@ -80,6 +102,12 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, percentyl: int 
         None = suma wszystkich typów na trakt (ten sam mianownik
         SUMA_WSP_Z obowiązuje dla każdego typu w danym trakcie, więc
         sumowanie SR_MIAZSZOSC po typach jest poprawne matematycznie).
+
+    progi: lista stałych progów zasobności (m3/ha) do zaznaczenia jako
+        osobne zakresy na mapie. Progi poza zakresem danych cyklu (>= max)
+        są automatycznie pomijane. Kolor każdego progu jest stały
+        (KOLORY_PROGOW_M3HA), więc mapy różnych cykli/gatunków są
+        porównywalne wizualnie.
     """
     res = martwe_drewno(nr_cykl=nr_cykl)
     if not res:
@@ -146,6 +174,7 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, percentyl: int 
     # ==============================================================================
     poland = gpd.read_file("data/poland_land.geojson").to_crs(CRS_OBLICZENIOWY)
     poland_geom = poland.geometry.union_all()
+    granica_polski = poland_geom.boundary
 
     xmin, ymin, xmax, ymax = poland.total_bounds
     x_grid = np.linspace(xmin, xmax, 500)
@@ -190,13 +219,24 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, percentyl: int 
         print(f"Brak poprawnych wartości zasobności dla cyklu {nr_cykl}.")
         return
 
-    prog_zasobnosci = np.percentile(wartosci_valid, percentyl)
+    max_zasobnosci = float(np.nanmax(wartosci_valid))
+
+    # Progi rosnąco, ograniczone do tych faktycznie osiągniętych w tym cyklu
+    # (próg >= max nie wyznaczyłby żadnego obszaru na contourf/contour).
+    progi_zasobnosci = sorted(p for p in set(progi) if p < max_zasobnosci)
+
+    if not progi_zasobnosci:
+        print(
+            f"Cykl {nr_cykl}: zasobność nie przekracza żadnego z progów {sorted(set(progi))} "
+            f"m3/ha (max={max_zasobnosci:.2f} m3/ha) - pomijam mapę."
+        )
+        return
 
     print(
         f"Martwe drewno | Cykl: {nr_cykl} | n_traktow={len(gdf_model)} | "
         f"srednia krajowa={np.nanmean(wartosci_valid):.2f} m3/ha | "
-        f"prog ({percentyl}. percentyl)={prog_zasobnosci:.2f} m3/ha | "
-        f"max={np.nanmax(wartosci_valid):.2f} m3/ha"
+        + " | ".join(f"> {prog:.0f} m3/ha" for prog in progi_zasobnosci)
+        + f" | max={max_zasobnosci:.2f} m3/ha"
     )
 
     # ==============================================================================
@@ -205,36 +245,135 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, percentyl: int 
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.set_aspect('equal')
 
-    cf = ax.contourf(
+    # Kolor każdego pasma jest STAŁY dla danej wartości progu (KOLORY_PROGOW_M3HA),
+    # nie zależy od tego, ile progów akurat rysujemy - pozwala porównywać
+    # mapy różnych cykli/gatunków wizualnie (patrz komentarz przy stałej).
+    kolory_pasm = [KOLORY_PROGOW_M3HA[prog] for prog in progi_zasobnosci]
+
+    ax.contourf(
         X, Y, srednia_zasobnosc,
-        cmap=plt.cm.YlOrBr,
-        levels=[prog_zasobnosci, np.nanmax(wartosci_valid)],
-        alpha=0.6,
+        levels=progi_zasobnosci + [max_zasobnosci],
+        colors=kolory_pasm,
+        alpha=0.7,
     )
-    kde_color = cf.get_facecolor()[0] if hasattr(cf, 'get_facecolor') else cf.collections[0].get_facecolor()[0]
 
     zasobnosc_contour = np.nan_to_num(srednia_zasobnosc, nan=0.0)
     cs = ax.contour(
         X, Y, zasobnosc_contour,
-        levels=[prog_zasobnosci],
+        levels=progi_zasobnosci,
         colors=['#6b3d00'],
-        linewidths=1.5,
+        linewidths=1.2,
     )
 
-    polygons = []
-    paths = cs.get_paths() if hasattr(cs, 'get_paths') else cs.collections[0].get_paths()
-    for path in paths:
-        for poly_pts in path.to_polygons():
-            if len(poly_pts) >= 3:
-                poly = Polygon(poly_pts)
+    # Geometria każdego zakresu osobno (do zapisu i do etykietowania) -
+    # cs.allsegs[i] to segmenty konturu dla i-tego progu z `progi_zasobnosci`,
+    # w tej samej kolejności.
+    zasiegi_geom = []
+    for segs in cs.allsegs:
+        polygons = []
+        for seg in segs:
+            if len(seg) >= 3:
+                poly = Polygon(seg)
                 if not poly.is_valid:
                     poly = shapely.make_valid(poly)
                 polygons.append(poly)
+        zasiegi_geom.append(shapely.union_all(polygons).buffer(0) if polygons else Polygon())
 
-    zasieg_geom = shapely.union_all(polygons).buffer(0) if polygons else Polygon()
+    # Etykiety KSZTAŁTEM I POŁOŻENIEM DOPASOWANE DO PRZEBIEGU KONTURU: zamiast
+    # jednego sztywnego napisu obróconego pod jednym kątem (dawne
+    # ax.clabel(manual=...)), każdy znak etykiety jest osobno pozycjonowany i
+    # obracany wzdłuż wyciętego fragmentu linii konturu (TekstWzdlugKonturu w
+    # kde_common.py) - dzięki temu napis "podąża" za krzywizną granicy
+    # zasięgu tak jak opis warstwicy na mapie topograficznej, zamiast
+    # przecinać ją pod przypadkowym kątem przy mocno wygiętych konturach.
+    #
+    # Punkt kotwiczący (środek etykiety) musi leżeć NA linii konturu
+    # (wierzchołek jego zewnętrznej granicy) - tylko wtedy wiadomo, z
+    # którego fragmentu pierścienia wyciąć ścieżkę pod tekst.
+    # representative_point() dałoby punkt ŚCIŚLE wewnątrz wielokąta, ale bez
+    # żadnego fragmentu linii, na który dałoby się nanieść napis.
+    #
+    # Kandydatów filtrujemy po odległości od granicy Polski
+    # (BORDER_TOL_ETYKIETY) - kategorycznie odrzucamy wierzchołki leżące
+    # blisko przebiegu granicy kraju, niezależnie od tego, czy to artefakt
+    # (kontur "przyklejony" do granicy przez np.nan_to_num na brzegu
+    # obszaru ważnego) czy realny fragment zasięgu - w obu przypadkach
+    # etykieta tam wyglądałaby jak opis granicy Polski, a nie warstwicy KDE.
+    # Wybieramy wierzchołki najdalsze od granicy - dla dłuższych fragmentów
+    # konturu więcej niż jeden, żeby etykieta pasma powtarzała się częściej
+    # (jak opis warstwicy na mapie topograficznej), ale zachowując między
+    # kolejnymi powtórzeniami odstęp MIN_ODSTEP_ETYKIET, żeby się nie zlewały.
+    #
+    # Szukamy tylko po granicy ZEWNĘTRZNEJ (czesc.exterior), nie po
+    # ewentualnych `interiors` - te ostatnie to granica z zagnieżdżonym
+    # wyższym progiem (już opisywana osobną etykietą tego wyższego progu).
+    #
+    # Punkt kotwiczący dla progu N trafia w PIERŚCIEŃ tego pasma (obszar
+    # >= prog_N ale poza zagnieżdżonym obszarem >= prog_N+1), nie w cały
+    # wielokąt >= prog_N - inaczej punkty zagnieżdżonych progów zbiegałyby
+    # się w tym samym, najbardziej wewnętrznym miejscu (tam, gdzie leży też
+    # najwyższy próg) i etykiety nakładałyby się na siebie.
+    MIN_POWIERZCHNIA_ETYKIETY = 3e8  # m^2 (300 km^2) - nie etykietujemy znikomych strzępków zakresu
+    BORDER_TOL_ETYKIETY = 15_000  # m - punkt kotwiczący etykiety musi leżeć dalej od granicy Polski niż to
+    MIN_ODSTEP_ETYKIET = 150_000  # m - minimalny odstęp między powtórzeniami etykiety tego samego pasma na jednym fragmencie konturu
+    kandydaci_etykiet = []
+    for i, prog in enumerate(progi_zasobnosci):
+        geom = zasiegi_geom[i]
+        if i + 1 < len(zasiegi_geom):
+            geom = geom.difference(zasiegi_geom[i + 1])
+        if geom.is_empty:
+            continue
+        czesci = [g for g in getattr(geom, 'geoms', [geom]) if isinstance(g, Polygon)]
+        for czesc in czesci:
+            if czesc.is_empty or czesc.area < MIN_POWIERZCHNIA_ETYKIETY:
+                continue
+            wierzcholki = np.array(czesc.exterior.coords)
+            odleglosc_od_granicy = shapely.distance(shapely.points(wierzcholki), granica_polski)
+            maska_daleko = odleglosc_od_granicy > BORDER_TOL_ETYKIETY
+            if not maska_daleko.any():
+                # Cała zewnętrzna granica tej części biegnie blisko granicy
+                # Polski (zasięg dochodzi do granicy na całej swojej
+                # długości) - nie da się tu bezpiecznie umieścić etykiety, więc
+                # kategorycznie pomijamy tę część zamiast ryzykować pomylenie
+                # jej z linią granicy kraju.
+                continue
+            # Kandydaci w kolejności od najdalszego od granicy - dobieramy
+            # zachłannie, pomijając każdego, kto wypadłby bliżej niż
+            # MIN_ODSTEP_ETYKIET od wierzchołka już wybranego.
+            idx_wg_odleglosci = np.argsort(-np.where(maska_daleko, odleglosc_od_granicy, -np.inf))
+            wybrane_idx = []
+            for idx in idx_wg_odleglosci:
+                if not maska_daleko[idx]:
+                    break
+                if all(
+                    np.linalg.norm(wierzcholki[idx] - wierzcholki[w]) >= MIN_ODSTEP_ETYKIET
+                    for w in wybrane_idx
+                ):
+                    wybrane_idx.append(int(idx))
+            for idx in wybrane_idx:
+                kandydaci_etykiet.append((prog, wierzcholki, idx))
+
+    if kandydaci_etykiet:
+        # Wymuszamy jednorazowe rysowanie figury, żeby mieć działający
+        # `renderer` - potrzebny do zmierzenia FAKTYCZNEJ szerokości
+        # znaków etykiety (dlugosc_tekstu_w_danych), zanim wytniemy pod nie
+        # fragment linii konturu.
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        for prog, wierzcholki, idx_najdalszy in kandydaci_etykiet:
+            tekst = f"> {prog:.0f} m³/ha"
+            dlugosc = dlugosc_tekstu_w_danych(ax, tekst, fontsize=6, renderer=renderer)
+            fragment = wytnij_fragment_konturu(wierzcholki, idx_najdalszy, dlugosc)
+            if len(fragment) < 2:
+                continue
+            etykieta = TekstWzdlugKonturu(
+                fragment[:, 0], fragment[:, 1], tekst, ax,
+                fontsize=6, color='#3d2400',
+            )
+            etykieta.set_path_effects([patheffects.withStroke(linewidth=2.5, foreground='white')])
 
     gdf_model.plot(ax=ax, color='gray', markersize=3, alpha=0.3)
-    gdf_model[gdf_model['SR_MIAZSZOSC'] > 0].plot(ax=ax, color='saddlebrown', markersize=6, alpha=0.6)
+    gdf_model[gdf_model['SR_MIAZSZOSC'] > 0].plot(ax=ax, color='orange', markersize=6, alpha=0.35)
     poland.boundary.plot(ax=ax, color='black', linewidth=1)
 
     try:
@@ -249,8 +388,8 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, percentyl: int 
     ax.grid(True, linestyle='--', alpha=0.5, color='gray')
 
     ax.set_title(
-        f"Zasobność martwego drewna — top {100-percentyl}% kraju "
-        f"(Cykl: {nr_cykl}, próg: {prog_zasobnosci:.1f} m3/ha)",
+        f"Zasobność martwego drewna — zakresy "
+        f"{', '.join(f'>{prog:.0f}' for prog in progi_zasobnosci)} m³/ha (Cykl: {nr_cykl})",
         fontsize=11,
     )
     ax.set_xlabel("X [m] (EPSG:2180)")
@@ -262,18 +401,27 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, percentyl: int 
     except Exception:
         pass
 
+    # Od najwyższego progu do najniższego.
     legend_elements = [
         mpatches.Patch(
-            facecolor=kde_color, edgecolor='#6b3d00', linewidth=1.5, alpha=0.6,
-            label=f'Top {100-percentyl}% zasobności (≥ {prog_zasobnosci:.1f} m³/ha)',
-        ),
-        mlines.Line2D([], [], color='saddlebrown', marker='o', linestyle='None', markersize=6, alpha=0.6,
+            facecolor=kolory_pasm[i], edgecolor='#6b3d00', linewidth=1.2, alpha=0.7,
+            label=f'> {progi_zasobnosci[i]:.0f} m³/ha',
+        )
+        for i in range(len(progi_zasobnosci) - 1, -1, -1)
+    ] + [
+        mlines.Line2D([], [], color='orange', marker='o', linestyle='None', markersize=6, alpha=0.35,
                       label='Trakt z martwym drewnem'),
         mlines.Line2D([], [], color='gray', marker='o', linestyle='None', markersize=4, alpha=0.4,
                       label='Trakt badany (tło)'),
         mlines.Line2D([], [], color='black', linewidth=1, label='Granica Polski'),
     ]
-    ax.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.01, 0.03), frameon=True, facecolor='white')
+    # Legenda WYNIESIONA poza obszar mapy (po prawej stronie osi), żeby nie
+    # zasłaniać terytorium Polski - wcześniejsze 'lower left' wewnątrz osi
+    # nakładało się na południowo-zachodni skrawek kraju.
+    ax.legend(
+        handles=legend_elements, loc='center left', bbox_to_anchor=(1.01, 0.5),
+        frameon=True, facecolor='white', fontsize=9, title="Legenda", title_fontsize=10,
+    )
 
     # ==============================================================================
     # ZAPIS WYNIKÓW
@@ -282,22 +430,26 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, percentyl: int 
         os.makedirs("KDE_martwe_drewno")
 
     gdf_zasieg = gpd.GeoDataFrame(
-        [{
-            'cykl': nr_cykl,
-            'typ_martwego_drewna': typ if typ is not None else 'wszystkie',
-            'percentyl': percentyl,
-            'prog_zasobnosci_m3ha': float(prog_zasobnosci),
-            'srednia_krajowa_m3ha': float(np.nanmean(wartosci_valid)),
-            'max_zasobnosci_m3ha': float(np.nanmax(wartosci_valid)),
-            'n_traktow': len(gdf_model),
-            'wiarygodne': wiarygodne,
-        }],
-        geometry=[zasieg_geom],
+        [
+            {
+                'cykl': nr_cykl,
+                'typ_martwego_drewna': typ if typ is not None else 'wszystkie',
+                'prog_zasobnosci_m3ha': prog,
+                'srednia_krajowa_m3ha': float(np.nanmean(wartosci_valid)),
+                'max_zasobnosci_m3ha': max_zasobnosci,
+                'n_traktow': len(gdf_model),
+                'wiarygodne': wiarygodne,
+                'geometry': geom,
+            }
+            for prog, geom in zip(progi_zasobnosci, zasiegi_geom)
+        ],
+        geometry='geometry',
         crs=CRS_OBLICZENIOWY,
     )
 
     sufiks_typ = f"_typ{typ}" if typ is not None else ""
-    file_prefix = f"martwe_drewno_cykl{nr_cykl}{sufiks_typ}_perc{percentyl}"
+    sufiks_prog = "_".join(str(int(p)) for p in progi_zasobnosci)
+    file_prefix = f"martwe_drewno_cykl{nr_cykl}{sufiks_typ}_prog{sufiks_prog}"
 
     gdf_zasieg.to_crs(CRS_ZAPISU).to_file(
         f"KDE_martwe_drewno/{file_prefix}.geojson", driver="GeoJSON"

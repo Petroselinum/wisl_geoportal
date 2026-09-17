@@ -190,4 +190,4 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
 if __name__ == "__main__":
     cykle = [1,2,3,4]
     for cykl in cykle:
-        uszkodzenia(nr_cykl=cykl, prog_nasil_uszk=3, gatunek='OL')
+        uszkodzenia(nr_cykl=cykl, prog_nasil_uszk=3, gatunek='ŚW')
