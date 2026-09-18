@@ -18,6 +18,11 @@ RSCRIPT_PATH = "/home/piotr/miniconda3/envs/jupyter_env/bin/Rscript"
 
 CRS_OBLICZENIOWY = "EPSG:2180"
 
+# Ten sam globalny próg wiarygodności modelu co w kde_uszkodzenia.py /
+# kde_martwe_drewno.py / kde_gat.py - poniżej tej liczby traktów mapa w
+# ogóle nie jest generowana.
+MIN_TRAKTOW_WIARYGODNY = 100
+
 def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = None):
     res = query_drzewostany_uszk(nr_cykl=nr_cykl)
     if not res:
@@ -65,6 +70,13 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
 
     if len(gdf_model) < 5:
         print(f"Zbyt mało danych dla cyklu {nr_cykl}.")
+        return
+
+    if len(gdf_model) < MIN_TRAKTOW_WIARYGODNY:
+        print(
+            f"Pominięto mapę: tylko {len(gdf_model)} traktów (wymagane min. "
+            f"{MIN_TRAKTOW_WIARYGODNY}, cykl {nr_cykl})."
+        )
         return
 
     # ==============================================================================

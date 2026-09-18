@@ -2,6 +2,10 @@ import pandas as pd
 import geopandas as gpd
 import numpy as np
 
+# Globalny próg wiarygodności modelu (ten sam co w skryptach KDE) - poniżej
+# tej liczby traktów pomiarowych mapa nie jest generowana.
+MIN_TRAKTOW = 100
+
 
 def heatmap_gatunki(udzial_gat, cykl=3, drzewostany=True):
     #Tworzymy dataframe
@@ -37,6 +41,10 @@ def heatmap_gatunki(udzial_gat, cykl=3, drzewostany=True):
         weight = row[1].reprezentatywnosc_gat
 
         heat_data.append([lat, lon, weight])
+
+    if len(heat_data) < MIN_TRAKTOW:
+        print(f"Pominięto mapę: tylko {len(heat_data)} traktów (wymagane min. {MIN_TRAKTOW}).")
+        return []
 
     return heat_data
 
@@ -74,7 +82,11 @@ def heatmap_uszkodzenia(uszkodzone, gatunek = ''):
         weight = row[1].WAGA 
         
         heat_data.append([lat, lon, weight])
-    
+
+    if len(heat_data) < MIN_TRAKTOW:
+        print(f"Pominięto mapę: tylko {len(heat_data)} traktów (wymagane min. {MIN_TRAKTOW}).")
+        return []
+
     return heat_data
 
 def heatmap_uszkodzenia_typy(uszkodzone, typ):
@@ -106,7 +118,11 @@ def heatmap_uszkodzenia_typy(uszkodzone, typ):
         weight = row[1].WAGA 
         
         heat_data.append([lat, lon, weight])
-    
+
+    if len(heat_data) < MIN_TRAKTOW:
+        print(f"Pominięto mapę: tylko {len(heat_data)} traktów (wymagane min. {MIN_TRAKTOW}).")
+        return []
+
     return heat_data
 
 def heatmap_martwe_drewno(martwe, typ = 0):
@@ -138,7 +154,11 @@ def heatmap_martwe_drewno(martwe, typ = 0):
         lat = row[1].geometry.y 
         lon = row[1].geometry.x 
         weight = np.log1p(row[1].SR_MIAZSZOSC)
-        
+
         heat_data.append([lat, lon, weight])
-    
+
+    if len(heat_data) < MIN_TRAKTOW:
+        print(f"Pominięto mapę: tylko {len(heat_data)} traktów (wymagane min. {MIN_TRAKTOW}).")
+        return []
+
     return heat_data

@@ -76,6 +76,51 @@ def query_udzial_gat(gatunek: str, nr_cykl: int = None):
                                             .where(gatunek_miazszosc.c.reprezentatywnosc_gat > 0)).all()
     return gatunek_miazszosc_filtr
 
+def query_tlo_drzewostany(nr_cykl: int = None):
+    # TŁO (mianownik g) do map udziału gatunków: WSZYSTKIE zbadane
+    # podpowierzchnie z drzewostanem w danym cyklu - nie tylko te z danym
+    # gatunkiem - z wagą reprezentatywności ZADRZEW * WSP_Z.
+    #
+    # To DOKŁADNIE ta sama waga, przez którą przemnożony jest UDZIAL_MIAZSZOSC
+    # w `reprezentatywnosc_gat` (query_udzial_gat), więc iloraz
+    # sum(reprezentatywnosc_gat) / sum(waga_tlo) jest ważoną średnią udziału
+    # miąższościowego gatunku - wielkością BEZWZGLĘDNĄ, porównywalną między
+    # cyklami. Pojedyncza znormalizowana gęstość KDE tego nie daje: integruje
+    # się zawsze do 1, więc przyrost gatunku w jednym regionie automatycznie
+    # obniża wartości we wszystkich pozostałych, nawet gdy nic się tam
+    # fizycznie nie zmieniło (gra o sumie zerowej).
+    #
+    # Uniwersum podpowierzchni musi być identyczne jak w liczniku: drzewa
+    # od 7 cm, z pominięciem przestoi (WAR = 10) - inaczej iloraz mieszałby
+    # dwie różne populacje odniesienia.
+    with Session(engine) as session:
+        pow_miazszosc = (select(
+                DRZEWA_OD_7.NR_PODPOW,
+                func.sum(OBL_DRZEWA_OD_7.MIAZSZOSC).label("SUMA_MIAZSZOSC")
+            )
+            .join(OBL_DRZEWA_OD_7, DRZEWA_OD_7.ID == OBL_DRZEWA_OD_7.ID)
+            .where(DRZEWA_OD_7.NR_CYKLU == nr_cykl,
+                   DRZEWA_OD_7.WAR != 10)
+            .group_by(DRZEWA_OD_7.NR_PODPOW)
+        ).subquery()
+
+        # Pojedyncze podpowierzchnie mają w bazie ZADRZEW/WSP_Z puste lub
+        # ujemne (błąd danych) - taka waga nie ma sensu jako reprezentatywność,
+        # więc odrzucamy je z tła zamiast wnosić ujemny wkład do mianownika.
+        waga_tlo = cast(OBL_ADRES_POW.ZADRZEW, Float) * cast(OBL_ADRES_POW.WSP_Z, Float)
+
+        return session.exec(
+            select(
+                OBL_ADRES_POW.NR_PODPOW,
+                waga_tlo.label('waga_tlo'),
+                pow_miazszosc.c.SUMA_MIAZSZOSC
+            )
+            .join(pow_miazszosc, OBL_ADRES_POW.NR_PODPOW == pow_miazszosc.c.NR_PODPOW)
+            .where(OBL_ADRES_POW.NR_CYKLU == nr_cykl,
+                   waga_tlo > 0)
+        ).all()
+
+
 def query_drzewostany_uszk(nr_cykl: int = None):
     with Session(engine) as session:
         powierzchnie_uszk = session.exec(

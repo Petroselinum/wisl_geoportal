@@ -334,6 +334,9 @@ def col_gat(drzewostany = True):
         udzal_gat = query_udzial_gat(gat, cykl)
         heat_data = heatmap_gatunki(udzal_gat, cykl=cykl, drzewostany=drzewostany)
 
+        if not heat_data:
+            continue
+
         fg = folium.FeatureGroup(name=slownik_gatunkow[gat], show=False)
 
         HeatMap(
@@ -383,6 +386,9 @@ uszk = query_drzewostany_uszk(cykl, nasil_uszk=6)
 
 for gat in [''] + gatunek:
     heat_data_uszk = heatmap_uszkodzenia(uszk, gatunek=gat)
+
+    if not heat_data_uszk:
+        continue
 
     if gat == '':
         fg_uszk = folium.FeatureGroup(name='wszystkie', show=False)
@@ -437,6 +443,9 @@ uszkodz = query_drzewostany_uszk(cykl, nasil_uszk=5)
 for uszk in uszkodzenia.keys():
     heat_data_uszk = heatmap_uszkodzenia_typy(uszkodz, typ=uszk)
 
+    if not heat_data_uszk:
+        continue
+
     fg_uszk = folium.FeatureGroup(name=uszkodzenia[uszk], show=False)
 
     HeatMap(
@@ -466,6 +475,9 @@ martwe_collection = []
 
 for key, val in martwe.items():
     heat_data_mar = heatmap_martwe_drewno(wisl_mar, typ=val)
+
+    if not heat_data_mar:
+        continue
 
     fg_mar = folium.FeatureGroup(name=key, show=False)
 

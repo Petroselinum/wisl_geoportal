@@ -149,12 +149,12 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[flo
         print(f"Zbyt mało danych przestrzennych do wyznaczenia KDE (cykl {nr_cykl}, znaleziono: {len(gdf_model)}).")
         return
 
-    wiarygodne = len(gdf_model) >= MIN_TRAKTOW_WIARYGODNY
-    if not wiarygodne:
+    if len(gdf_model) < MIN_TRAKTOW_WIARYGODNY:
         print(
-            f"Uwaga: tylko {len(gdf_model)} traktów (próg wiarygodności: "
-            f"{MIN_TRAKTOW_WIARYGODNY}). Wynik może być niewiarygodny."
+            f"Pominięto mapę: tylko {len(gdf_model)} traktów (wymagane min. "
+            f"{MIN_TRAKTOW_WIARYGODNY}, cykl {nr_cykl})."
         )
+        return
 
     coords = np.vstack([gdf_model.geometry.x, gdf_model.geometry.y])
 
@@ -387,9 +387,13 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[flo
     ax.set_ylim(ymin - MARGIN, ymax + MARGIN)
     ax.grid(True, linestyle='--', alpha=0.5, color='gray')
 
+    zakresy_opis = ', '.join(
+        (f'{prog:.0f}–{progi_zasobnosci[i + 1]:.0f}'
+         if i + 1 < len(progi_zasobnosci) else f'>{prog:.0f}')
+        for i, prog in enumerate(progi_zasobnosci)
+    )
     ax.set_title(
-        f"Zasobność martwego drewna — zakresy "
-        f"{', '.join(f'>{prog:.0f}' for prog in progi_zasobnosci)} m³/ha (Cykl: {nr_cykl})",
+        f"Zasobność martwego drewna — zakresy {zakresy_opis} m³/ha (Cykl: {nr_cykl})",
         fontsize=11,
     )
     ax.set_xlabel("X [m] (EPSG:2180)")
@@ -401,11 +405,19 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[flo
     except Exception:
         pass
 
-    # Od najwyższego progu do najniższego.
+    # Od najwyższego progu do najniższego. Etykiety opisują PRZEDZIAŁY, a nie
+    # progi: contourf koloruje rozłączne pasma (levels = progi + [max]), więc
+    # najjaśniejszy kolor to np. 5-10 m³/ha, a nie "wszystko powyżej 5".
+    # Etykiety przy samych liniach konturu zostają progowe ("> 5 m³/ha") - tam
+    # jest to poprawne, bo linia wyznacza właśnie przekroczenie progu.
+    # Wielokąty w GeoJSON są z kolei kumulatywne (zagnieżdżone), tak jak
+    # w kde_gat.py - patrz atrybut prog_zasobnosci_m3ha.
     legend_elements = [
         mpatches.Patch(
             facecolor=kolory_pasm[i], edgecolor='#6b3d00', linewidth=1.2, alpha=0.7,
-            label=f'> {progi_zasobnosci[i]:.0f} m³/ha',
+            label=(f'{progi_zasobnosci[i]:.0f}–{progi_zasobnosci[i + 1]:.0f} m³/ha'
+                   if i + 1 < len(progi_zasobnosci)
+                   else f'> {progi_zasobnosci[i]:.0f} m³/ha'),
         )
         for i in range(len(progi_zasobnosci) - 1, -1, -1)
     ] + [
@@ -438,7 +450,6 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[flo
                 'srednia_krajowa_m3ha': float(np.nanmean(wartosci_valid)),
                 'max_zasobnosci_m3ha': max_zasobnosci,
                 'n_traktow': len(gdf_model),
-                'wiarygodne': wiarygodne,
                 'geometry': geom,
             }
             for prog, geom in zip(progi_zasobnosci, zasiegi_geom)

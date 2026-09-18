@@ -25,8 +25,7 @@ PERCENTYL_RYZYKA = 95
 PROG_MIN_TLA = 0.01
 
 # Ten sam globalny próg wiarygodności modelu co w kde_martwe_drewno.py /
-# kde_gat.py - poniżej tej liczby traktów wynik jest tylko ostrzeżeniem,
-# nie blokadą (twardy próg to len(gdf_model) < 5 niżej w kodzie).
+# kde_gat.py - poniżej tej liczby traktów mapa w ogóle nie jest generowana.
 MIN_TRAKTOW_WIARYGODNY = 100
 
 def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = None):
@@ -91,9 +90,10 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
 
     if len(gdf_model) < MIN_TRAKTOW_WIARYGODNY:
         print(
-            f"Uwaga: tylko {len(gdf_model)} traktów (próg wiarygodności: "
-            f"{MIN_TRAKTOW_WIARYGODNY}). Wynik może być niewiarygodny."
+            f"Pominięto mapę: tylko {len(gdf_model)} traktów (wymagane min. "
+            f"{MIN_TRAKTOW_WIARYGODNY}, cykl {nr_cykl})."
         )
+        return
 
     coords = np.vstack([gdf_model.geometry.x, gdf_model.geometry.y])
 
