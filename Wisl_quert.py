@@ -1,11 +1,36 @@
 from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, engine
 from sqlmodel import Session, select, func, cast, Float, Integer, literal_column, text
-from sqlalchemy import case
+from sqlalchemy import or_
 import geopandas as gpd
 import math
 
-# Górne przycięcie stopnia zadrzewienia - patrz komentarz w query_tlo_drzewostany.
-MAX_ZADRZEW = 2.0
+# R_POW_PR (słownik SL_R_POW_LES) - las BEZ aktualnego drzewostanu, ale wciąż
+# część gospodarki leśnej: Halizna(7), Zrąb(8), Płazowina(9), Do naturalnej
+# sukcesji(10), Objęte szczególną ochroną(11), Inne wylesienia(12). WCHODZĄ
+# do tła (mianownika) map udziału gatunków, bo fizycznie SĄ powierzchnią
+# leśną - tylko chwilowo bez drzew. Plantacje specjalnego przeznaczenia
+# (2-6: nasienne, szybko rosnące, choinkowe, krzewów, poletka łowieckie) i
+# infrastruktura leśna (13+: drogi, budynki, linie energetyczne, szkółki)
+# są wykluczone - nie reprezentują gospodarczego rozmieszczenia gatunków.
+KODY_R_POW_LAS = [1, 7, 8, 9, 10, 11, 12]
+
+# Górny próg wieku dla "młodej uprawy" (patrz query_mlode_uprawy) - odsiewa
+# podpowierzchnie R_POW_PR=1 bez drzew >=7cm o wieku znacznie wyższym (w
+# danych: do 155 lat), które są najpewniej błędnie sklasyfikowanymi
+# zrębami/haliznami z nieaktualnym, planistycznym opisem w GAT_PAN_PR.
+MAX_WIEK_MLODEJ_UPRAWY = 20
+
+
+def _dopasowanie_gatunku(kolumna, gatunek):
+    # Kody gatunków WISL rozróżniają podgatunki kropką (DB.S, DB.B, DB.C -
+    # warianty dębu; podobnie SO.*, ŚW.*, BRZ.* itd.). Porównanie na sztywno
+    # (GAT == 'DB') pomija je całkowicie - sprawdzone na danych: dla dębu to
+    # 20,6% wszystkich drzew i 1990 podpowierzchni, które przy dosłownym
+    # dopasowaniu znikają z wyników CAŁKOWICIE (nie mają żadnego drzewa z
+    # czystym kodem 'DB'). Traktujemy podgatunek jako gatunek bazowy wszędzie,
+    # więc dopasowanie to zawsze "dokładnie ten kod ALBO ten kod plus kropka".
+    return or_(kolumna == gatunek, kolumna.like(gatunek + '.%'))
+
 
 def query_udzial_gat(gatunek: str, nr_cykl: int = None):
     # Nawiązanie połączenia z bazą WISL
@@ -15,7 +40,7 @@ def query_udzial_gat(gatunek: str, nr_cykl: int = None):
             DRZEWA_OD_7.NR_PODPOW,
             DRZEWA_OD_7.NR_CYKLU
         ).where(
-            DRZEWA_OD_7.GAT == gatunek
+            _dopasowanie_gatunku(DRZEWA_OD_7.GAT, gatunek)
         ).distinct().subquery()
         
         # Oblicza całkowitą MIAZSZOSC dla każdej kombinacji NR_PODPOW i NR_CYKLU z pominięciem przestoi
@@ -60,7 +85,7 @@ def query_udzial_gat(gatunek: str, nr_cykl: int = None):
             .join(OBL_ADRES_POW, 
                 (DRZEWA_OD_7.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
                 (DRZEWA_OD_7.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
-            .where(DRZEWA_OD_7.GAT == gatunek,
+            .where(_dopasowanie_gatunku(DRZEWA_OD_7.GAT, gatunek),
                 DRZEWA_OD_7.NR_CYKLU == nr_cykl,
                 DRZEWA_OD_7.WAR != 10)
             .group_by(DRZEWA_OD_7.NR_PODPOW, 
@@ -80,60 +105,80 @@ def query_udzial_gat(gatunek: str, nr_cykl: int = None):
                                             .where(gatunek_miazszosc.c.reprezentatywnosc_gat > 0)).all()
     return gatunek_miazszosc_filtr
 
-def query_tlo_drzewostany(nr_cykl: int = None):
-    # TŁO (mianownik g) do map udziału gatunków: WSZYSTKIE zbadane
-    # podpowierzchnie z drzewostanem w danym cyklu - nie tylko te z danym
-    # gatunkiem - z wagą reprezentatywności ZADRZEW * WSP_Z.
+def query_tlo_lasu(nr_cykl: int = None):
+    # TŁO (mianownik g) do map udziału gatunków: CAŁA badana powierzchnia
+    # leśna w danym cyklu - drzewostany (R_POW_PR=1) oraz fragmenty lasu
+    # chwilowo bez drzewostanu (R_POW_PR 7-12 - patrz KODY_R_POW_LAS) - nie
+    # tylko podpowierzchnie z danym gatunkiem.
     #
-    # To DOKŁADNIE ta sama waga, przez którą przemnożony jest UDZIAL_MIAZSZOSC
-    # w `reprezentatywnosc_gat` (query_udzial_gat), więc iloraz
-    # sum(reprezentatywnosc_gat) / sum(waga_tlo) jest ważoną średnią udziału
-    # miąższościowego gatunku - wielkością BEZWZGLĘDNĄ, porównywalną między
-    # cyklami. Pojedyncza znormalizowana gęstość KDE tego nie daje: integruje
-    # się zawsze do 1, więc przyrost gatunku w jednym regionie automatycznie
+    # Iloraz sum(waga_gat) / sum(waga_tlo) jest ważoną średnią udziału
+    # gatunku - wielkością BEZWZGLĘDNĄ, porównywalną między cyklami.
+    # Pojedyncza znormalizowana gęstość KDE tego nie daje: integruje się
+    # zawsze do 1, więc przyrost gatunku w jednym regionie automatycznie
     # obniża wartości we wszystkich pozostałych, nawet gdy nic się tam
     # fizycznie nie zmieniło (gra o sumie zerowej).
     #
-    # Uniwersum podpowierzchni musi być identyczne jak w liczniku: drzewa
-    # od 7 cm, z pominięciem przestoi (WAR = 10) - inaczej iloraz mieszałby
-    # dwie różne populacje odniesienia.
+    # Waga = WSP_Z. BEZ zadrzewienia (ZADRZEW): podpowierzchnie bez drzew
+    # >=7cm (młode uprawy - query_mlode_uprawy, oraz R_POW_PR 7-12) mają w tej
+    # bazie ZADRZEW zawsze NULL (sprawdzone: 0/2088), więc jego użycie w
+    # wadze wykluczyłoby je z tła, a chodzi dokładnie o to, żeby je uwzględnić
+    # - inaczej cała powierzchnia lasu przed/po wycince byłaby niewidoczna
+    # w mianowniku, sztucznie zawyżając udział wszystkich gatunków.
+    KODY_LAS_SQL = KODY_R_POW_LAS
     with Session(engine) as session:
-        pow_miazszosc = (select(
-                DRZEWA_OD_7.NR_PODPOW,
-                func.sum(OBL_DRZEWA_OD_7.MIAZSZOSC).label("SUMA_MIAZSZOSC")
-            )
-            .join(OBL_DRZEWA_OD_7, DRZEWA_OD_7.ID == OBL_DRZEWA_OD_7.ID)
-            .where(DRZEWA_OD_7.NR_CYKLU == nr_cykl,
-                   DRZEWA_OD_7.WAR != 10)
-            .group_by(DRZEWA_OD_7.NR_PODPOW)
-        ).subquery()
-
-        # ZADRZEW to stopień zadrzewienia względem tablic zasobności
-        # (Szymkiewicza): 1,1 = 110% normy modelowej dla danego wieku i
-        # siedliska. Jest więc intensywnością zajęcia POWIERZCHNI, odniesioną
-        # do normy - stąd ZADRZEW * WSP_Z jest wielkością powierzchniową
-        # ("efektywna powierzchnia w pełni zadrzewiona"), a nie miąższościową.
-        #
-        # Baza zawiera wartości niefizyczne: minimum -0,146 i maksimum 21,9
-        # przy medianie 0,92 (1165 podpowierzchni powyżej 2,0 w cyklu 4).
-        # Ujemne odrzucamy całkiem, a górne przycinamy do MAX_ZADRZEW - stopień
-        # zadrzewienia rzędu 20 to błąd danych, a nie drzewostan 20 razy
-        # gęstszy od normy, i bez przycięcia taka podpowierzchnia wchodziłaby
-        # do KDE z wagą kilkunastokrotnie wyższą niż typowa.
-        zadrzew_surowe = cast(OBL_ADRES_POW.ZADRZEW, Float)
-        zadrzew = case((zadrzew_surowe > MAX_ZADRZEW, literal_column(str(MAX_ZADRZEW))),
-                       else_=zadrzew_surowe)
-        waga_tlo = zadrzew * cast(OBL_ADRES_POW.WSP_Z, Float)
-
+        waga_tlo = cast(OBL_ADRES_POW.WSP_Z, Float)
         return session.exec(
             select(
                 OBL_ADRES_POW.NR_PODPOW,
                 waga_tlo.label('waga_tlo'),
-                pow_miazszosc.c.SUMA_MIAZSZOSC
             )
-            .join(pow_miazszosc, OBL_ADRES_POW.NR_PODPOW == pow_miazszosc.c.NR_PODPOW)
-            .where(OBL_ADRES_POW.NR_CYKLU == nr_cykl,
+            .join(ADRES_POW,
+                (ADRES_POW.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
+                (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
+            .where(ADRES_POW.NR_CYKLU == nr_cykl,
+                   ADRES_POW.R_POW_PR.in_(KODY_LAS_SQL),
                    waga_tlo > 0)
+        ).all()
+
+
+def query_mlode_uprawy(nr_cykl: int = None):
+    # Podpowierzchnie R_POW_PR=1 (Drzewostan) bez ŻADNEGO drzewa >=7cm i z
+    # WIEK_PAN_PR <= MAX_WIEK_MLODEJ_UPRAWY - młode uprawy leśne, gdzie
+    # gatunek określamy na podstawie GAT_PAN_PR (gatunek panujący wg opisu
+    # taksacyjnego), bo nie ma jeszcze mierzalnej miąższości do policzenia
+    # UDZIAL_MIAZSZOSC. Dotyczy WYŁĄCZNIE miary powierzchniowej (drzewostany)
+    # - dla miąższościowej nie ma czego zmierzyć.
+    #
+    # Bez tego 2088 podpowierzchni R_POW_PR=1 znika CAŁKOWICIE z modelu (nie
+    # ma ich ani w liczniku, ani w mianowniku), bo obie strony ilorazu opierały
+    # się na obecności drzew w DRZEWA_OD_7. To systematycznie zaniżało udział
+    # gatunków silnie reprezentowanych w młodym pokoleniu (odnowieniowych).
+    #
+    # Waga = WSP_Z (ZADRZEW jest tu zawsze NULL w bazie).
+    with Session(engine) as session:
+        ma_drzewa = (
+            select(DRZEWA_OD_7.NR_PODPOW)
+            .where(DRZEWA_OD_7.NR_CYKLU == nr_cykl, DRZEWA_OD_7.WAR != 10)
+            .distinct()
+        ).subquery()
+
+        waga_tlo = cast(OBL_ADRES_POW.WSP_Z, Float)
+        return session.exec(
+            select(
+                ADRES_POW.NR_PODPOW,
+                ADRES_POW.GAT_PAN_PR,
+                waga_tlo.label('waga_tlo'),
+            )
+            .join(OBL_ADRES_POW,
+                (OBL_ADRES_POW.NR_PODPOW == ADRES_POW.NR_PODPOW) &
+                (OBL_ADRES_POW.NR_CYKLU == ADRES_POW.NR_CYKLU))
+            .outerjoin(ma_drzewa, ma_drzewa.c.NR_PODPOW == ADRES_POW.NR_PODPOW)
+            .where(ADRES_POW.NR_CYKLU == nr_cykl,
+                   ADRES_POW.R_POW_PR == 1,
+                   ADRES_POW.WIEK_PAN_PR <= MAX_WIEK_MLODEJ_UPRAWY,
+                   ADRES_POW.GAT_PAN_PR.isnot(None),
+                   waga_tlo > 0,
+                   ma_drzewa.c.NR_PODPOW.is_(None))
         ).all()
 
 

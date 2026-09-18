@@ -9,7 +9,7 @@ import geopandas as gpd
 import shapely
 from scipy.stats import gaussian_kde
 from shapely.geometry import Polygon
-from Wisl_quert import query_udzial_gat, query_tlo_drzewostany
+from Wisl_quert import query_udzial_gat, query_tlo_lasu, query_mlode_uprawy
 from kde_common import (
     wymus_wspolne_pasmo,
     TekstWzdlugKonturu,
@@ -47,8 +47,8 @@ CRS_ZAPISU = "EPSG:4326"
 # Rozwiązanie to ten sam estymator Nadaraya-Watson, który sprawdził się już
 # w kde_martwe_drewno.py: iloraz dwóch KDE o WSPÓLNYM paśmie.
 #   f = KDE ważone wagą gatunku (patrz `miara` niżej)
-#   g = KDE ważone wagą WSZYSTKICH zbadanych drzewostanów (ZADRZEW * WSP_Z),
-#       niezależnie od gatunku - query_tlo_drzewostany
+#   g = KDE ważone wagą CAŁEJ badanej powierzchni leśnej (WSP_Z),
+#       niezależnie od gatunku - query_tlo_lasu
 # Wynik f/g to lokalny, wygładzony przestrzennie UDZIAŁ gatunku (0-1) -
 # wielkość bezwzględna o sensie fizycznym. Ten sam test kontrolowany daje dla
 # niezmienionego regionu 0,3672 w OBU scenariuszach.
@@ -56,22 +56,68 @@ CRS_ZAPISU = "EPSG:4326"
 # ==============================================================================
 # DLACZEGO DOMYŚLNIE POWIERZCHNIA, A NIE MIĄŻSZOŚĆ
 # ==============================================================================
-# ZADRZEW to stopień zadrzewienia względem tablic zasobności (Szymkiewicza):
-# 1,1 = 110% normy modelowej DLA DANEGO WIEKU i siedliska. Jest to więc
-# intensywność zajęcia powierzchni, znormalizowana wiekowo - potwierdzone
-# w danych: ZADRZEW koreluje z wiekiem tylko +0,13 i jest płaskie w klasach
-# wieku (0,95-1,07 powyżej 20 lat), podczas gdy ZASOBNOSC koreluje +0,48,
-# a surowa LICZBA_DRZEW -0,40 (samoprzerzedzenie). Iloczyn ZADRZEW * WSP_Z
-# jest zatem wielkością POWIERZCHNIOWĄ ("efektywna powierzchnia w pełni
-# zadrzewiona"), a nie miąższościową.
+# Dla trybu drzewostany (miara='powierzchnia') waga to WYŁĄCZNIE WSP_Z -
+# BEZ zadrzewienia (ZADRZEW). Dwa powody:
 #
-# Jedynym elementem czyniącym wynik miąższościowym jest UDZIAL_MIAZSZOSC.
-# Ponieważ miąższość silnie zależy od wieku (a udział gatunku w zasobach - od
-# jego pozycji w piętrze), udział miąższościowy zaniża gatunki młodsze
-# i wolniej przyrastające. Sprawdzone na cyklu 4: przejście na miarę
-# powierzchniową podnosi udział brzozy o 42,6%, jodły o 39,7%, dębu o 20,0%.
-# Dla pytania "gdzie rośnie ten gatunek" właściwa jest powierzchnia; miąższość
-# odpowiada na inne pytanie - "gdzie są jego zasoby drzewne".
+# 1. Merytoryczny: ZADRZEW różnicuje podpowierzchnie o tym samym udziale
+#    miąższościowym i tej samej powierzchni (WSP_Z) wg intensywności/gęstości
+#    lasu - to osobne pytanie od "czy tu rośnie drzewostan tego gatunku".
+#    Podpowierzchnia z 2 rzadkimi dębami i podpowierzchnia z 30 gęstymi
+#    dębami mają tu tę samą wagę, bo obie SĄ drzewostanem dębowym (>=60%
+#    miąższości) - interesuje nas GDZIE, nie JAK GĘSTO.
+# 2. Techniczny: ZADRZEW jest w tej bazie ZAWSZE NULL dla podpowierzchni bez
+#    drzew >=7cm (sprawdzone: 0/2088) - a to dokładnie te podpowierzchnie
+#    (młode uprawy, zręby, halizny), które trzeba było dołączyć do modelu,
+#    żeby przestały być całkowicie niewidoczne (patrz niżej). Waga oparta
+#    na ZADRZEW by je automatycznie wykluczała.
+#
+# Jedynym elementem czyniącym wynik miąższościowym (miara='miazszosc') jest
+# UDZIAL_MIAZSZOSC. Ponieważ miąższość silnie zależy od wieku (a udział
+# gatunku w zasobach - od jego pozycji w piętrze), udział miąższościowy
+# zaniża gatunki młodsze i wolniej przyrastające. Sprawdzone na cyklu 4:
+# przejście na miarę powierzchniową podnosi udział brzozy o 42,6%, jodły
+# o 39,7%, dębu o 20,0%. Dla pytania "gdzie rośnie ten gatunek" właściwa jest
+# powierzchnia; miąższość odpowiada na inne pytanie - "gdzie są jego zasoby
+# drzewne" (i to jest sens trybu drzewostany=False, gdzie liczy się też
+# domieszka, nie tylko dominacja).
+#
+# ==============================================================================
+# MIANOWNIK: CAŁA POWIERZCHNIA LEŚNA, NIE TYLKO DRZEWA >=7CM
+# ==============================================================================
+# 5,5% podpowierzchni R_POW_PR=1 ("Drzewostan") w cyklu 4 (2158/39548) nie ma
+# ŻADNEGO drzewa >=7cm - to młode uprawy (mediana wieku 10 lat) i sporadyczne
+# błędnie sklasyfikowane zręby (wiek do 155 lat). Wcześniejsza wersja tej
+# metody (i cała reszta obliczeń WISL oparta na DRZEWA_OD_7) pomijała je
+# CAŁKOWICIE - nie tylko w liczniku, ale i w mianowniku, bo obie strony
+# ilorazu wymagały obecności drzew >=7cm. To systematycznie zaniżało udział
+# gatunków silnie reprezentowanych w młodym pokoleniu odnowieniowym.
+#
+# Rozwiązanie ma dwie części (query_mlode_uprawy, query_tlo_lasu):
+#  - Młode uprawy (R_POW_PR=1, brak drzew >=7cm, wiek <=20) WCHODZĄ do
+#    licznika gatunku wskazanego przez GAT_PAN_PR (opis taksacyjny) - to
+#    realny, aktualny gatunek odnowienia, bo ktoś już go tam posadził/on się
+#    tam odnawia. Tylko dla miary='powierzchnia' - miąższościowo nie ma czego
+#    mierzyć.
+#  - Las bez aktualnego drzewostanu (Halizna, Zrąb, Płazowina, Do naturalnej
+#    sukcesji, Objęte ochroną, Inne wylesienia - R_POW_PR 7-12) WCHODZI do
+#    MIANOWNIKA (jako część badanej powierzchni leśnej), ale NIE do żadnego
+#    licznika gatunkowego - GAT_PAN_PR na takiej podpowierzchni to zazwyczaj
+#    gatunek USUNIĘTEGO drzewostanu (opis planistyczny), nie stan faktyczny,
+#    więc przypisanie mu 100% udziału byłoby błędem. Poprawnie obniża to
+#    udział KAŻDEGO gatunku, bo tam faktycznie nic teraz nie rośnie.
+# Plantacje specjalnego przeznaczenia (R_POW_PR 2-6) i infrastruktura leśna
+# (13+) są wykluczone z obu stron - nie reprezentują gospodarczego
+# rozmieszczenia gatunków.
+#
+# ==============================================================================
+# PODGATUNKI (DB.S, DB.B, DB.C, SO.*, ...) TRAKTOWANE JAK GATUNEK BAZOWY
+# ==============================================================================
+# Kody WISL rozróżniają podgatunki kropką. Dosłowne porównanie kodu (obecne
+# przed tą poprawką) pomijało je całkowicie - dla dębu to 20,6% wszystkich
+# drzew i 1990 podpowierzchni, które miały WYŁĄCZNIE podgatunek (żadnego
+# drzewa z czystym kodem 'DB') i przez to znikały z wyników w 100%. Dla
+# pozostałych 7 gatunków głównych wpływ jest marginalny (0-4,2%), ale
+# konwersja jest zastosowana uniwersalnie (Wisl_quert._dopasowanie_gatunku).
 #
 # Te same dwie pułapki co przy martwym drewnie są tu obsłużone tak samo:
 # wspólne pasmo licznika i mianownika (wymus_wspolne_pasmo - sam `factor` nie
@@ -114,20 +160,21 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
     przekraczających stałe progi udziału.
 
     drzewostany=True  - licznik ograniczony do powierzchni, na których gatunek
-        DOMINUJE (udział miąższości > 50%, ZADRZEW >= 0,3): mapa zasięgu
-        drzewostanów danego gatunku.
+        DOMINUJE (udział miąższości >= 60%): mapa zasięgu drzewostanów danego
+        gatunku. Obejmuje też młode uprawy (patrz query_mlode_uprawy), gdzie
+        gatunek panujący pochodzi z opisu taksacyjnego (GAT_PAN_PR), bo nie ma
+        jeszcze mierzalnej miąższości.
     drzewostany=False - licznik obejmuje każde wystąpienie gatunku, także jako
-        domieszki: mapa zasięgu samego gatunku.
+        domieszki: mapa zasięgu samego gatunku (bez młodych upraw - te nie
+        mają miąższości, więc nie da się dla nich policzyć udziału domieszki).
 
     miara - co dokładnie jest udziałem:
-        'powierzchnia' - udział w ZADRZEWIONEJ POWIERZCHNI lasu. Licznik to
-            waga powierzchniowa (ZADRZEW * WSP_Z) drzewostanów gatunku, ta sama,
-            z której zbudowany jest mianownik. Niezależne od wieku drzewostanu:
-            ZADRZEW jest odniesione do tablic zasobności dla danego wieku
-            (1,1 = 110% normy), więc młody, dobrze zadrzewiony drzewostan waży
-            tyle samo co stary.
-        'miazszosc' - udział w MIĄŻSZOŚCI. Licznik dodatkowo przemnożony przez
-            UDZIAL_MIAZSZOSC, czyli faktyczny udział gatunku w zasobach.
+        'powierzchnia' - udział w BADANEJ POWIERZCHNI LEŚNEJ. Licznik i
+            mianownik oparte WYŁĄCZNIE na WSP_Z (bez zadrzewienia - patrz
+            uzasadnienie w komentarzu na górze pliku). Niezależne od wieku
+            i gęstości drzewostanu.
+        'miazszosc' - udział w MIĄŻSZOŚCI. Licznik to UDZIAL_MIAZSZOSC * WSP_Z,
+            czyli faktyczny udział gatunku w zasobach ważony powierzchnią.
             Wielkość zależna od wieku i produkcyjności: młody dąb w podszycie
             pod starą sosną wnosi mało miąższości mimo zajmowanej powierzchni.
 
@@ -137,8 +184,8 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
         udziału gatunku wewnątrz drzewostanu mieszanego, a zaliczenie całej
         podpowierzchni domieszce zawyżałoby wynik wielokrotnie.
 
-    Mianownik (tło) jest zawsze ten sam - wszystkie zbadane drzewostany - więc
-    mapy są wyrażone w tej samej, porównywalnej skali.
+    Mianownik (tło) jest zawsze ten sam - cała badana powierzchnia leśna
+    (query_tlo_lasu) - więc mapy są wyrażone w tej samej, porównywalnej skali.
     """
     if miara is None:
         miara = 'powierzchnia' if drzewostany else 'miazszosc'
@@ -157,7 +204,7 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
     adnotacja = "drzewostany" if drzewostany else "gatunek"
 
     # ==============================================================================
-    # 1. DANE: LICZNIK (GATUNEK) I MIANOWNIK (WSZYSTKIE DRZEWOSTANY)
+    # 1. DANE: LICZNIK (GATUNEK) I MIANOWNIK (CAŁA POWIERZCHNIA LEŚNA)
     # ==============================================================================
     udzial_gat = query_udzial_gat(gat, cykl)
     if not udzial_gat:
@@ -169,41 +216,58 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
         'ZADRZEW', 'SUMA_MIAZSZOSC_gat', 'SUMA_MIAZSZOSC'])
 
     # Filtr dominacji: gatunek stanowi co najmniej 60% miąższości na
-    # podpowierzchni (sposób wyłonienia gatunku panującego). ZADRZEW >= 0.3
-    # to minimalna gęstość lasu (30% normy dla wieku), ale w metodzie wag
-    # ZADRZEW pojawia się już w licznika i mianowniku.
+    # podpowierzchni (sposób wyłonienia gatunku panującego). Bez warunku na
+    # ZADRZEW - patrz uzasadnienie na górze pliku (metoda wag go pomija
+    # celowo, więc niespójnie byłoby zostawiać go tu jako próg kwalifikacji).
     if drzewostany:
-        df_gat = df_gat.query("UDZIAL_MIAZSZOSC >= 0.6 & ZADRZEW >= 0.3")
+        df_gat = df_gat.query("UDZIAL_MIAZSZOSC >= 0.6")
+
+    tlo = query_tlo_lasu(cykl)
+    if not tlo:
+        print(f"Brak danych tła dla cyklu {cykl}.")
+        return
+    df_tlo = pd.DataFrame(tlo, columns=['NR_PODPOW', 'waga_tlo'])
+
+    # Wagę licznika bierzemy z TŁA (waga_tlo = WSP_Z), a nie z
+    # reprezentatywnosc_gat liczonej w SQL (ta wciąż zawiera ZADRZEW - służy
+    # tylko do odsiania w SQL zerowych/ujemnych wag, nie do obliczeń tutaj).
+    # Tylko wtedy licznik i mianownik stoją na dokładnie tej samej wadze.
+    # Podpowierzchnie z drzewami danego gatunku są ścisłym podzbiorem tła
+    # (R_POW_PR=1 jest podzbiorem KODY_R_POW_LAS), więc złączenie niczego nie gubi.
+    df_gat = df_gat.merge(df_tlo, on='NR_PODPOW', how='inner')
+
+    if miara == 'powierzchnia':
+        # Cała powierzchnia drzewostanu liczy się na rzecz gatunku, który go
+        # tworzy.
+        df_gat['waga_gat'] = df_gat['waga_tlo']
+
+        # Młode uprawy (bez drzew >=7cm, więc nieobecne w query_udzial_gat) -
+        # gatunek z opisu taksacyjnego (GAT_PAN_PR), z tym samym dopasowaniem
+        # podgatunków jak w SQL. Rozłączne z df_gat z definicji (query_mlode_uprawy
+        # wymaga braku drzew >=7cm, df_gat wymaga ich obecności), więc concat
+        # bez ryzyka zdublowania podpowierzchni.
+        mlode = query_mlode_uprawy(cykl)
+        if mlode:
+            df_mlode = pd.DataFrame(mlode, columns=['NR_PODPOW', 'GAT_PAN_PR', 'waga_tlo'])
+            maska_gat = (df_mlode['GAT_PAN_PR'] == gat) | df_mlode['GAT_PAN_PR'].str.startswith(gat + '.')
+            df_mlode_gat = df_mlode.loc[maska_gat, ['NR_PODPOW', 'waga_tlo']].copy()
+            df_mlode_gat['waga_gat'] = df_mlode_gat['waga_tlo']
+            df_gat = pd.concat(
+                [df_gat[['NR_PODPOW', 'waga_tlo', 'waga_gat']], df_mlode_gat],
+                ignore_index=True,
+            )
+    else:
+        # Powierzchnia ważona faktycznym udziałem gatunku w miąższości. Młode
+        # uprawy pomijamy - nie mają miąższości do zmierzenia.
+        df_gat['waga_gat'] = df_gat['UDZIAL_MIAZSZOSC'] * df_gat['waga_tlo']
 
     if df_gat.empty:
         print(f"Brak powierzchni po odfiltrowaniu ({adnotacja}) dla gatunku {gat} w cyklu {cykl}.")
         return
 
-    tlo = query_tlo_drzewostany(cykl)
-    if not tlo:
-        print(f"Brak danych tła dla cyklu {cykl}.")
-        return
-
-    df_tlo = pd.DataFrame(tlo, columns=['NR_PODPOW', 'waga_tlo', 'SUMA_MIAZSZOSC'])
-
     # ==============================================================================
     # 2. AGREGACJA DO TRAKTU
     # ==============================================================================
-    # Wagę licznika bierzemy z TŁA (waga_tlo = przycięte ZADRZEW * WSP_Z), a nie
-    # z reprezentatywnosc_gat liczonej w SQL. Powód: tylko wtedy licznik i
-    # mianownik stoją na dokładnie tej samej wadze powierzchniowej, z tym samym
-    # przycięciem ZADRZEW. Podpowierzchnie licznika są ścisłym podzbiorem tła
-    # (sprawdzone: zero poza), więc to złączenie niczego nie gubi.
-    df_gat = df_gat.merge(df_tlo[['NR_PODPOW', 'waga_tlo']], on='NR_PODPOW', how='inner')
-
-    if miara == 'powierzchnia':
-        # Cała zadrzewiona powierzchnia drzewostanu liczy się na rzecz gatunku,
-        # który go tworzy.
-        df_gat['waga_gat'] = df_gat['waga_tlo']
-    else:
-        # Powierzchnia ważona faktycznym udziałem gatunku w miąższości.
-        df_gat['waga_gat'] = df_gat['UDZIAL_MIAZSZOSC'] * df_gat['waga_tlo']
-
     for df in (df_gat, df_tlo):
         df['NR_TRAKTU'] = pd.to_numeric(df['NR_PODPOW']).astype('int64') // 1000
 
