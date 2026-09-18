@@ -46,12 +46,32 @@ CRS_ZAPISU = "EPSG:4326"
 #
 # Rozwiązanie to ten sam estymator Nadaraya-Watson, który sprawdził się już
 # w kde_martwe_drewno.py: iloraz dwóch KDE o WSPÓLNYM paśmie.
-#   f = KDE ważone reprezentatywnoscia gatunku (UDZIAL_MIAZSZOSC * ZADRZEW * WSP_Z)
-#   g = KDE ważone reprezentatywnością WSZYSTKICH zbadanych drzewostanów
-#       (ZADRZEW * WSP_Z), niezależnie od gatunku - query_tlo_drzewostany
-# Wynik f/g to lokalny, wygładzony przestrzennie UDZIAŁ gatunku w miąższości
-# drzewostanów (0-1) - wielkość bezwzględna o sensie fizycznym. Ten sam test
-# kontrolowany daje dla niezmienionego regionu 0,3672 w OBU scenariuszach.
+#   f = KDE ważone wagą gatunku (patrz `miara` niżej)
+#   g = KDE ważone wagą WSZYSTKICH zbadanych drzewostanów (ZADRZEW * WSP_Z),
+#       niezależnie od gatunku - query_tlo_drzewostany
+# Wynik f/g to lokalny, wygładzony przestrzennie UDZIAŁ gatunku (0-1) -
+# wielkość bezwzględna o sensie fizycznym. Ten sam test kontrolowany daje dla
+# niezmienionego regionu 0,3672 w OBU scenariuszach.
+#
+# ==============================================================================
+# DLACZEGO DOMYŚLNIE POWIERZCHNIA, A NIE MIĄŻSZOŚĆ
+# ==============================================================================
+# ZADRZEW to stopień zadrzewienia względem tablic zasobności (Szymkiewicza):
+# 1,1 = 110% normy modelowej DLA DANEGO WIEKU i siedliska. Jest to więc
+# intensywność zajęcia powierzchni, znormalizowana wiekowo - potwierdzone
+# w danych: ZADRZEW koreluje z wiekiem tylko +0,13 i jest płaskie w klasach
+# wieku (0,95-1,07 powyżej 20 lat), podczas gdy ZASOBNOSC koreluje +0,48,
+# a surowa LICZBA_DRZEW -0,40 (samoprzerzedzenie). Iloczyn ZADRZEW * WSP_Z
+# jest zatem wielkością POWIERZCHNIOWĄ ("efektywna powierzchnia w pełni
+# zadrzewiona"), a nie miąższościową.
+#
+# Jedynym elementem czyniącym wynik miąższościowym jest UDZIAL_MIAZSZOSC.
+# Ponieważ miąższość silnie zależy od wieku (a udział gatunku w zasobach - od
+# jego pozycji w piętrze), udział miąższościowy zaniża gatunki młodsze
+# i wolniej przyrastające. Sprawdzone na cyklu 4: przejście na miarę
+# powierzchniową podnosi udział brzozy o 42,6%, jodły o 39,7%, dębu o 20,0%.
+# Dla pytania "gdzie rośnie ten gatunek" właściwa jest powierzchnia; miąższość
+# odpowiada na inne pytanie - "gdzie są jego zasoby drzewne".
 #
 # Te same dwie pułapki co przy martwym drewnie są tu obsłużone tak samo:
 # wspólne pasmo licznika i mianownika (wymus_wspolne_pasmo - sam `factor` nie
@@ -68,13 +88,13 @@ CRS_ZAPISU = "EPSG:4326"
 PROG_MIN_TLA = 0.01           # poniżej tego ułamka maksimum gęstości tła nie ufamy ilorazowi (brzegi)
 MIN_TRAKTOW_WIARYGODNY = 100  # globalny próg wiarygodności modelu (ten sam co w pozostałych skryptach KDE)
 
-# Progi STAŁE (udział gatunku w miąższości drzewostanów), a nie percentyle
-# rozkładu w danym cyklu - z tego samego powodu co PROGI_ZASOBNOSCI_M3HA w
-# kde_martwe_drewno.py: percentyl to znowu wielkość względna, więc mapy
-# różnych cykli przestałyby być porównywalne, czyli wróciłby dokładnie ten
-# problem, który ta metoda ma rozwiązywać.
+# Progi STAŁE (udział gatunku), a nie percentyle rozkładu w danym cyklu -
+# z tego samego powodu co PROGI_ZASOBNOSCI_M3HA w kde_martwe_drewno.py:
+# percentyl to znowu wielkość względna, więc mapy różnych cykli przestałyby być
+# porównywalne, czyli wróciłby dokładnie ten problem, który ta metoda ma
+# rozwiązywać.
 # Najniższy próg (5%) pełni rolę dawnego "zasięgu gatunku": obszar, na którym
-# gatunek stanowi co najmniej 5% miąższości lokalnego lasu.
+# gatunek stanowi co najmniej 5% lokalnego lasu.
 PROGI_UDZIALU = [0.05, 0.10, 0.25, 0.50]
 
 # Kolor przypisany NA STAŁE do konkretnej wartości progu (nie do jej pozycji
@@ -88,10 +108,10 @@ KOLORY_PROGOW = {
 }
 
 
-def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
+def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_UDZIALU):
     """
-    Lokalny, wygładzony przestrzennie udział gatunku w miąższości drzewostanów,
-    z zaznaczeniem obszarów przekraczających stałe progi udziału.
+    Lokalny, wygładzony przestrzennie udział gatunku, z zaznaczeniem obszarów
+    przekraczających stałe progi udziału.
 
     drzewostany=True  - licznik ograniczony do powierzchni, na których gatunek
         DOMINUJE (udział miąższości > 50%, ZADRZEW >= 0,3): mapa zasięgu
@@ -99,9 +119,41 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
     drzewostany=False - licznik obejmuje każde wystąpienie gatunku, także jako
         domieszki: mapa zasięgu samego gatunku.
 
-    Mianownik (tło) jest w OBU przypadkach ten sam - wszystkie zbadane
-    drzewostany - więc obie mapy są wyrażone w tej samej, porównywalnej skali.
+    miara - co dokładnie jest udziałem:
+        'powierzchnia' - udział w ZADRZEWIONEJ POWIERZCHNI lasu. Licznik to
+            waga powierzchniowa (ZADRZEW * WSP_Z) drzewostanów gatunku, ta sama,
+            z której zbudowany jest mianownik. Niezależne od wieku drzewostanu:
+            ZADRZEW jest odniesione do tablic zasobności dla danego wieku
+            (1,1 = 110% normy), więc młody, dobrze zadrzewiony drzewostan waży
+            tyle samo co stary.
+        'miazszosc' - udział w MIĄŻSZOŚCI. Licznik dodatkowo przemnożony przez
+            UDZIAL_MIAZSZOSC, czyli faktyczny udział gatunku w zasobach.
+            Wielkość zależna od wieku i produkcyjności: młody dąb w podszycie
+            pod starą sosną wnosi mało miąższości mimo zajmowanej powierzchni.
+
+        None (domyślnie) dobiera miarę do trybu: 'powierzchnia' dla drzewostanów,
+        'miazszosc' dla gatunku z domieszkami. Miara powierzchniowa NIE JEST
+        dostępna w trybie drzewostany=False - WISL nie podaje powierzchniowego
+        udziału gatunku wewnątrz drzewostanu mieszanego, a zaliczenie całej
+        podpowierzchni domieszce zawyżałoby wynik wielokrotnie.
+
+    Mianownik (tło) jest zawsze ten sam - wszystkie zbadane drzewostany - więc
+    mapy są wyrażone w tej samej, porównywalnej skali.
     """
+    if miara is None:
+        miara = 'powierzchnia' if drzewostany else 'miazszosc'
+
+    if miara not in ('powierzchnia', 'miazszosc'):
+        raise ValueError(f"Nieznana miara: {miara!r} (dozwolone: 'powierzchnia', 'miazszosc')")
+
+    if miara == 'powierzchnia' and not drzewostany:
+        print(
+            f"Pominięto mapę: miara powierzchniowa nie jest dostępna dla trybu "
+            f"gatunku z domieszkami (gatunek {gat}, cykl {cykl}) - WISL nie podaje "
+            f"powierzchniowego udziału gatunku w drzewostanie mieszanym."
+        )
+        return
+
     adnotacja = "drzewostany" if drzewostany else "gatunek"
 
     # ==============================================================================
@@ -116,10 +168,12 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
         'NR_PODPOW', 'NR_CYKLU', 'UDZIAL_MIAZSZOSC', 'reprezentatywnosc_gat',
         'ZADRZEW', 'SUMA_MIAZSZOSC_gat', 'SUMA_MIAZSZOSC'])
 
-    # Ten sam filtr dominacji co w heatmap_data.heatmap_gatunki - gatunek
-    # tworzy drzewostan, a nie jest tylko domieszką.
+    # Filtr dominacji: gatunek stanowi co najmniej 60% miąższości na
+    # podpowierzchni (sposób wyłonienia gatunku panującego). ZADRZEW >= 0.3
+    # to minimalna gęstość lasu (30% normy dla wieku), ale w metodzie wag
+    # ZADRZEW pojawia się już w licznika i mianowniku.
     if drzewostany:
-        df_gat = df_gat.query("UDZIAL_MIAZSZOSC > 0.5 & ZADRZEW >= 0.3")
+        df_gat = df_gat.query("UDZIAL_MIAZSZOSC >= 0.6 & ZADRZEW >= 0.3")
 
     if df_gat.empty:
         print(f"Brak powierzchni po odfiltrowaniu ({adnotacja}) dla gatunku {gat} w cyklu {cykl}.")
@@ -135,10 +189,25 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
     # ==============================================================================
     # 2. AGREGACJA DO TRAKTU
     # ==============================================================================
+    # Wagę licznika bierzemy z TŁA (waga_tlo = przycięte ZADRZEW * WSP_Z), a nie
+    # z reprezentatywnosc_gat liczonej w SQL. Powód: tylko wtedy licznik i
+    # mianownik stoją na dokładnie tej samej wadze powierzchniowej, z tym samym
+    # przycięciem ZADRZEW. Podpowierzchnie licznika są ścisłym podzbiorem tła
+    # (sprawdzone: zero poza), więc to złączenie niczego nie gubi.
+    df_gat = df_gat.merge(df_tlo[['NR_PODPOW', 'waga_tlo']], on='NR_PODPOW', how='inner')
+
+    if miara == 'powierzchnia':
+        # Cała zadrzewiona powierzchnia drzewostanu liczy się na rzecz gatunku,
+        # który go tworzy.
+        df_gat['waga_gat'] = df_gat['waga_tlo']
+    else:
+        # Powierzchnia ważona faktycznym udziałem gatunku w miąższości.
+        df_gat['waga_gat'] = df_gat['UDZIAL_MIAZSZOSC'] * df_gat['waga_tlo']
+
     for df in (df_gat, df_tlo):
         df['NR_TRAKTU'] = pd.to_numeric(df['NR_PODPOW']).astype('int64') // 1000
 
-    f_trakty = df_gat.groupby('NR_TRAKTU', as_index=False)['reprezentatywnosc_gat'].sum()
+    f_trakty = df_gat.groupby('NR_TRAKTU', as_index=False)['waga_gat'].sum()
     g_trakty = df_tlo.groupby('NR_TRAKTU', as_index=False)['waga_tlo'].sum()
 
     # LEFT JOIN od tła: trakty bez gatunku zostają w modelu z wagą licznika 0.
@@ -146,7 +215,7 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
     # po powierzchniach, na których gatunek już jest, więc wszędzie wychodziłby
     # zawyżony udział (a obszary bez gatunku w ogóle nie obniżałyby wyniku).
     df_model = g_trakty.merge(f_trakty, on='NR_TRAKTU', how='left')
-    df_model['reprezentatywnosc_gat'] = df_model['reprezentatywnosc_gat'].fillna(0.0)
+    df_model['waga_gat'] = df_model['waga_gat'].fillna(0.0)
     df_model['NR_TRAKTU'] = df_model['NR_TRAKTU'].astype(str)
 
     # ==============================================================================
@@ -160,7 +229,7 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
     gdf_model = gpd.GeoDataFrame(gdf_model, geometry='geometry', crs=trakty.crs).to_crs(CRS_OBLICZENIOWY)
     gdf_model = gdf_model[gdf_model.geometry.notnull() & (gdf_model['waga_tlo'] > 0)].copy()
 
-    maska_gat = gdf_model['reprezentatywnosc_gat'] > 0
+    maska_gat = gdf_model['waga_gat'] > 0
     n_traktow_gat = int(maska_gat.sum())
 
     if len(gdf_model) < 5:
@@ -192,7 +261,7 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
     # ==============================================================================
     coords = np.vstack([gdf_model.geometry.x, gdf_model.geometry.y])
     waga_tlo = gdf_model['waga_tlo'].to_numpy()
-    waga_f = gdf_model['reprezentatywnosc_gat'].to_numpy()
+    waga_f = gdf_model['waga_gat'].to_numpy()
 
     kernel_tlo = gaussian_kde(coords, weights=waga_tlo, bw_method='scott')
     kernel_f = gaussian_kde(coords, weights=waga_f)
@@ -234,7 +303,7 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
         return
 
     print(
-        f"Gatunek: {gat} ({adnotacja}) | Cykl: {cykl} | n_traktow={len(gdf_model)} "
+        f"Gatunek: {gat} ({adnotacja}, {miara}) | Cykl: {cykl} | n_traktow={len(gdf_model)} "
         f"(z gatunkiem: {n_traktow_gat}) | udział krajowy={wspolczynnik_korekty_skali:.3f} | "
         f"max lokalny={max_udzialu:.3f}"
     )
@@ -244,11 +313,13 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
     # np. 5-10%, a nie "wszystko powyżej 5%". Wielokąty zapisywane do GeoJSON są
     # natomiast kumulatywne (zagnieżdżone) - tam prog_udzialu=0,05 to faktycznie
     # cały obszar powyżej 5%. Dwie różne konwencje w dwóch różnych wynikach.
+    jednostka = 'powierzchni' if miara == 'powierzchnia' else 'miąższości'
+
     def etykieta_pasma(i):
         prog = progi_udzialu[i]
         if i + 1 < len(progi_udzialu):
-            return f'{prog:.0%}–{progi_udzialu[i + 1]:.0%} miąższości'
-        return f'> {prog:.0%} miąższości'
+            return f'{prog:.0%}–{progi_udzialu[i + 1]:.0%} {jednostka}'
+        return f'> {prog:.0%} {jednostka}'
 
     # ==============================================================================
     # 6. WIZUALIZACJA I EKSTRAKCJA GEOMETRII
@@ -379,9 +450,11 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
     ax.set_ylim(ymin - MARGIN, ymax + MARGIN)
 
     ax.grid(True, linestyle='--', alpha=0.5, color='gray')
+    opis_miary = ("zadrzewionej powierzchni lasu" if miara == 'powierzchnia'
+                  else "miąższości drzewostanów")
     ax.set_title(
-        f"Udział gatunku {gat} w miąższości drzewostanów - zakresy "
-        f"{', '.join(etykieta_pasma(i).replace(' miąższości', '') for i in range(len(progi_udzialu)))} "
+        f"Udział gatunku {gat} w {opis_miary} - zakresy "
+        f"{', '.join(etykieta_pasma(i).replace(f' {jednostka}', '') for i in range(len(progi_udzialu)))} "
         f"(Cykl: {cykl} | {adnotacja})",
         fontsize=11,
     )
@@ -429,6 +502,7 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
                 'gatunek': gat,
                 'cykl': cykl,
                 'typ_zasiegu': adnotacja,
+                'miara': miara,
                 'prog_udzialu': prog,
                 # Wielokąty są KUMULATYWNE (zagnieżdżone): obszar progu 0,10
                 # leży w całości wewnątrz obszaru progu 0,05. To inna konwencja
@@ -448,11 +522,12 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, progi=PROGI_UDZIALU):
 
     # Eksport do EPSG:4326 (WGS84) dla portalu webowego / Folium
     gdf_zasieg.to_crs(CRS_ZAPISU).to_file(
-        f"KDE_gatunki/zasieg_{gat}_cykl_{cykl}_{adnotacja}_epsg4326.geojson", driver="GeoJSON"
+        f"KDE_gatunki/zasieg_{gat}_cykl_{cykl}_{adnotacja}_{miara}_epsg4326.geojson", driver="GeoJSON"
     )
-    fig.savefig(f"KDE_gatunki/mapa_{gat}_cykl_{cykl}_{adnotacja}.png", dpi=300, bbox_inches="tight")
+    fig.savefig(f"KDE_gatunki/mapa_{gat}_cykl_{cykl}_{adnotacja}_{miara}.png",
+                dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print(f"Zakończono pomyślnie. Zapisano wyniki dla gatunku {gat} ({adnotacja}), cykl {cykl}.")
+    print(f"Zakończono pomyślnie. Zapisano wyniki dla gatunku {gat} ({adnotacja}, {miara}), cykl {cykl}.")
 
 
 if __name__ == "__main__":

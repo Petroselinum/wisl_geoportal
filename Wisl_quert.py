@@ -1,7 +1,11 @@
 from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, engine
 from sqlmodel import Session, select, func, cast, Float, Integer, literal_column, text
+from sqlalchemy import case
 import geopandas as gpd
 import math
+
+# Górne przycięcie stopnia zadrzewienia - patrz komentarz w query_tlo_drzewostany.
+MAX_ZADRZEW = 2.0
 
 def query_udzial_gat(gatunek: str, nr_cykl: int = None):
     # Nawiązanie połączenia z bazą WISL
@@ -104,10 +108,22 @@ def query_tlo_drzewostany(nr_cykl: int = None):
             .group_by(DRZEWA_OD_7.NR_PODPOW)
         ).subquery()
 
-        # Pojedyncze podpowierzchnie mają w bazie ZADRZEW/WSP_Z puste lub
-        # ujemne (błąd danych) - taka waga nie ma sensu jako reprezentatywność,
-        # więc odrzucamy je z tła zamiast wnosić ujemny wkład do mianownika.
-        waga_tlo = cast(OBL_ADRES_POW.ZADRZEW, Float) * cast(OBL_ADRES_POW.WSP_Z, Float)
+        # ZADRZEW to stopień zadrzewienia względem tablic zasobności
+        # (Szymkiewicza): 1,1 = 110% normy modelowej dla danego wieku i
+        # siedliska. Jest więc intensywnością zajęcia POWIERZCHNI, odniesioną
+        # do normy - stąd ZADRZEW * WSP_Z jest wielkością powierzchniową
+        # ("efektywna powierzchnia w pełni zadrzewiona"), a nie miąższościową.
+        #
+        # Baza zawiera wartości niefizyczne: minimum -0,146 i maksimum 21,9
+        # przy medianie 0,92 (1165 podpowierzchni powyżej 2,0 w cyklu 4).
+        # Ujemne odrzucamy całkiem, a górne przycinamy do MAX_ZADRZEW - stopień
+        # zadrzewienia rzędu 20 to błąd danych, a nie drzewostan 20 razy
+        # gęstszy od normy, i bez przycięcia taka podpowierzchnia wchodziłaby
+        # do KDE z wagą kilkunastokrotnie wyższą niż typowa.
+        zadrzew_surowe = cast(OBL_ADRES_POW.ZADRZEW, Float)
+        zadrzew = case((zadrzew_surowe > MAX_ZADRZEW, literal_column(str(MAX_ZADRZEW))),
+                       else_=zadrzew_surowe)
+        waga_tlo = zadrzew * cast(OBL_ADRES_POW.WSP_Z, Float)
 
         return session.exec(
             select(
