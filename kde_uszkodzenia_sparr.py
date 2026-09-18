@@ -202,5 +202,5 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
 
 if __name__ == "__main__":
     from Wisl_quert import CYKLE_LATA
-    for rok_start, rok_end in CYKLE_LATA.values():
+    for rok_start, rok_end in CYKLE_LATA:
         uszkodzenia(rok_start=rok_start, rok_end=rok_end, prog_nasil_uszk=3, gatunek='ŚW')

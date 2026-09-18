@@ -30,12 +30,14 @@ MAX_WIEK_MLODEJ_UPRAWY = 20
 # samodzielnym źródłem danych o drzewostanie.
 STATUS_GRUNTU_MAX = 3
 
-# Zakresy lat odpowiadające formalnym cyklom WISL (sprawdzone w bazie -
-# rozłączne, sąsiadujące: MIN/MAX(SUBSTRING(DATA,1,4)) per NR_CYKLU).
-# Tylko wygodny skrót do iterowania "po wszystkich historycznych cyklach" w
-# blokach __main__ - funkcje zapytań przyjmują rok_start/rok_end wprost i nie
-# wymagają, żeby zakres pokrywał się z którymkolwiek z tych cykli.
-CYKLE_LATA = {1: (2005, 2009), 2: (2010, 2014), 3: (2015, 2019), 4: (2020, 2025)}
+# Zakresy lat odpowiadające formalnym cyklom WISL, w kolejności chronologicznej
+# (sprawdzone w bazie - rozłączne, sąsiadujące: MIN/MAX(SUBSTRING(DATA,1,4))
+# per NR_CYKLU). Tylko wygodny skrót do iterowania "po wszystkich historycznych
+# okresach" w blokach __main__ - lista, nie słownik z numerem cyklu jako
+# kluczem, bo numer cyklu nie jest już częścią interfejsu (funkcje zapytań
+# przyjmują rok_start/rok_end wprost i nie wymagają, żeby zakres pokrywał się
+# z którymkolwiek z tych cykli).
+CYKLE_LATA = [(2005, 2009), (2010, 2014), (2015, 2019), (2020, 2025)]
 
 
 def _filtr_lat(kolumna_data, rok_start, rok_end):

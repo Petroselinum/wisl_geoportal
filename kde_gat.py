@@ -605,5 +605,5 @@ if __name__ == "__main__":
     from Wisl_quert import CYKLE_LATA
     gatunki = ['SO', 'ŚW', 'JD', 'MD', 'DB', 'BK', 'BRZ', 'OL']
     for gat in gatunki:
-        for rok_start, rok_end in CYKLE_LATA.values():
+        for rok_start, rok_end in CYKLE_LATA:
             plot_kde_for_species(gat=gat, rok_start=rok_start, rok_end=rok_end, drzewostany=True)

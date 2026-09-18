@@ -477,5 +477,5 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
 
 if __name__ == "__main__":
     from Wisl_quert import CYKLE_LATA
-    for rok_start, rok_end in CYKLE_LATA.values():
+    for rok_start, rok_end in CYKLE_LATA:
         martwe_drewno_mapa(rok_start=rok_start, rok_end=rok_end)
