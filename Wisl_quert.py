@@ -117,39 +117,51 @@ def martwe_drewno(nr_cykl: int = None):
     PRZELICZNIK_NA_HEKTAR = 10000.0 / (math.pi * 11.28 ** 2)
 
     with Session(engine) as session:
-        sql = text("""
-            WITH z_pow_les AS (
-                SELECT 
-                    NR_PODPOW / 1000 AS NR_Traktu,
-                    CAST(SUM(WSP_Z) AS FLOAT) AS SUMA_WSP_Z
-                FROM OBL_ADRES_POW
-                WHERE NR_CYKLU = :nr_cykl
-                  AND GAT IS NOT NULL
-                GROUP BY NR_PODPOW / 1000
-            ),
-            martwe AS (
-                SELECT
-                    a.NR_PODPOW / 1000 AS NR_Traktu,
-                    d.TYP,
-                    CAST(SUM(od.MIAZSZOSC) AS FLOAT) AS MIAZSZOSC_martwe_pow
-                FROM DRZEWA_MARTWE d
-                JOIN OBL_DRZEWA_MARTWE od ON d.ID = od.ID
-                JOIN OBL_ADRES_POW a ON d.NR_PODPOW = a.NR_PODPOW
-                                     AND d.NR_CYKLU = a.NR_CYKLU
-                WHERE d.NR_CYKLU = :nr_cykl
-                GROUP BY a.NR_PODPOW / 1000, d.NR_PODPOW, d.TYP
+        NR_Traktu_z = (OBL_ADRES_POW.NR_PODPOW // literal_column('1000')).label('NR_Traktu')
+        z_pow_les = (
+            select(
+                NR_Traktu_z,
+                cast(func.sum(OBL_ADRES_POW.WSP_Z), Float).label('SUMA_WSP_Z')
             )
-            SELECT
-                z.NR_Traktu,
-                m.TYP,
-                (COALESCE(SUM(m.MIAZSZOSC_martwe_pow), 0) / z.SUMA_WSP_Z) * :przelicznik AS SR_MIAZSZOSC,
-                z.SUMA_WSP_Z
-            FROM z_pow_les z
-            LEFT JOIN martwe m ON m.NR_Traktu = z.NR_Traktu
-            GROUP BY z.NR_Traktu, m.TYP, z.SUMA_WSP_Z
-        """)
-        
-        return session.execute(sql, {"nr_cykl": nr_cykl, "przelicznik": PRZELICZNIK_NA_HEKTAR}).all()
+            .join(ADRES_POW,
+                (ADRES_POW.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
+                (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
+            .where(
+                OBL_ADRES_POW.NR_CYKLU == nr_cykl,
+                ADRES_POW.R_POW_PR.in_([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+            )
+            .group_by(NR_Traktu_z)
+        ).cte('z_pow_les')
+
+        NR_Traktu_m = (OBL_ADRES_POW.NR_PODPOW // literal_column('1000')).label('NR_Traktu')
+        martwe = (
+            select(
+                NR_Traktu_m,
+                DRZEWA_MARTWE.TYP,
+                cast(func.sum(OBL_DRZEWA_MARTWE.MIAZSZOSC), Float).label('MIAZSZOSC_martwe_pow')
+            )
+            .join(OBL_DRZEWA_MARTWE, DRZEWA_MARTWE.ID == OBL_DRZEWA_MARTWE.ID)
+            .join(OBL_ADRES_POW,
+                (DRZEWA_MARTWE.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
+                (DRZEWA_MARTWE.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
+            .where(DRZEWA_MARTWE.NR_CYKLU == nr_cykl)
+            .group_by(NR_Traktu_m, OBL_ADRES_POW.NR_PODPOW, DRZEWA_MARTWE.TYP)
+        ).cte('martwe')
+
+        wynik = session.exec(
+            select(
+                z_pow_les.c.NR_Traktu,
+                martwe.c.TYP,
+                ((func.coalesce(func.sum(martwe.c.MIAZSZOSC_martwe_pow), 0) / z_pow_les.c.SUMA_WSP_Z)
+                 * PRZELICZNIK_NA_HEKTAR).label('SR_MIAZSZOSC'),
+                z_pow_les.c.SUMA_WSP_Z
+            )
+            .select_from(z_pow_les)
+            .join(martwe, martwe.c.NR_Traktu == z_pow_les.c.NR_Traktu, isouter=True)
+            .group_by(z_pow_les.c.NR_Traktu, martwe.c.TYP, z_pow_les.c.SUMA_WSP_Z)
+        ).all()
+
+        return wynik
 
 
 def query_all_wisl_plots(nr_cykl):
