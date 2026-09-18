@@ -1,6 +1,6 @@
 from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, engine
 from sqlmodel import Session, select, func, cast, Float, Integer, literal_column, text
-from sqlalchemy import or_
+from sqlalchemy import or_, and_
 import geopandas as gpd
 import math
 
@@ -30,6 +30,27 @@ MAX_WIEK_MLODEJ_UPRAWY = 20
 # samodzielnym źródłem danych o drzewostanie.
 STATUS_GRUNTU_MAX = 3
 
+# Zakresy lat odpowiadające formalnym cyklom WISL (sprawdzone w bazie -
+# rozłączne, sąsiadujące: MIN/MAX(SUBSTRING(DATA,1,4)) per NR_CYKLU).
+# Tylko wygodny skrót do iterowania "po wszystkich historycznych cyklach" w
+# blokach __main__ - funkcje zapytań przyjmują rok_start/rok_end wprost i nie
+# wymagają, żeby zakres pokrywał się z którymkolwiek z tych cykli.
+CYKLE_LATA = {1: (2005, 2009), 2: (2010, 2014), 3: (2015, 2019), 4: (2020, 2025)}
+
+
+def _filtr_lat(kolumna_data, rok_start, rok_end):
+    # ADRES_POW.DATA to nvarchar(10) w formacie 'YYYY-MM-DD' - pierwsze 4
+    # znaki to rok wykonania pomiaru. Filtrujemy PO ROKU, nie po sztywnym
+    # NR_CYKLU: cykle WISL są rozłączne (1=2005-2009, 2=2010-2014,
+    # 3=2015-2019, 4=2020-2025 - sprawdzone w bazie), ale filtr po roku
+    # pozwala wybrać dowolny zakres, niekoniecznie pokrywający się z
+    # formalnym cyklem (np. tylko 2 ostatnie lata cyklu, albo dwa cykle
+    # naraz). NR_CYKLU jako KLUCZ ZŁĄCZENIA tabel (razem z NR_PODPOW)
+    # zostaje bez zmian wszędzie - to nie jest filtr, tylko identyfikator
+    # rekordu.
+    rok = func.substring(kolumna_data, 1, 4).cast(Integer)
+    return and_(rok >= rok_start, rok <= rok_end)
+
 
 def _dopasowanie_gatunku(kolumna, gatunek):
     # Kody gatunków WISL rozróżniają podgatunki kropką (DB.S, DB.B, DB.C -
@@ -42,7 +63,7 @@ def _dopasowanie_gatunku(kolumna, gatunek):
     return or_(kolumna == gatunek, kolumna.like(gatunek + '.%'))
 
 
-def query_udzial_gat(gatunek: str, nr_cykl: int = None):
+def query_udzial_gat(gatunek: str, rok_start: int = None, rok_end: int = None):
     # Nawiązanie połączenia z bazą WISL
     with Session(engine) as session:
         # Pobiera unikalne kombinacje NR_PODPOW i NR_CYKLU dla danego gatunku
@@ -103,7 +124,7 @@ def query_udzial_gat(gatunek: str, nr_cykl: int = None):
                 (DRZEWA_OD_7.NR_PODPOW == ADRES_POW.NR_PODPOW) &
                 (DRZEWA_OD_7.NR_CYKLU == ADRES_POW.NR_CYKLU))
             .where(_dopasowanie_gatunku(DRZEWA_OD_7.GAT, gatunek),
-                DRZEWA_OD_7.NR_CYKLU == nr_cykl,
+                _filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
                 DRZEWA_OD_7.WAR != 10,
                 ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX)
             .group_by(DRZEWA_OD_7.NR_PODPOW, 
@@ -123,7 +144,7 @@ def query_udzial_gat(gatunek: str, nr_cykl: int = None):
                                             .where(gatunek_miazszosc.c.reprezentatywnosc_gat > 0)).all()
     return gatunek_miazszosc_filtr
 
-def query_tlo_lasu(nr_cykl: int = None):
+def query_tlo_lasu(rok_start: int = None, rok_end: int = None):
     # TŁO (mianownik g) do map udziału gatunków: CAŁA badana powierzchnia
     # leśna w danym cyklu - drzewostany (R_POW_PR=1) oraz fragmenty lasu
     # chwilowo bez drzewostanu (R_POW_PR 7-12 - patrz KODY_R_POW_LAS) - nie
@@ -153,14 +174,14 @@ def query_tlo_lasu(nr_cykl: int = None):
             .join(ADRES_POW,
                 (ADRES_POW.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
                 (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
-            .where(ADRES_POW.NR_CYKLU == nr_cykl,
+            .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
                    ADRES_POW.R_POW_PR.in_(KODY_LAS_SQL),
                    ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX,
                    waga_tlo > 0)
         ).all()
 
 
-def query_mlode_uprawy(nr_cykl: int = None):
+def query_mlode_uprawy(rok_start: int = None, rok_end: int = None):
     # Podpowierzchnie R_POW_PR=1 (Drzewostan) bez ŻADNEGO drzewa >=7cm i z
     # WIEK_PAN_PR <= MAX_WIEK_MLODEJ_UPRAWY - młode uprawy leśne, gdzie
     # gatunek określamy na podstawie GAT_PAN_PR (gatunek panujący wg opisu
@@ -175,9 +196,16 @@ def query_mlode_uprawy(nr_cykl: int = None):
     #
     # Waga = WSP_Z (ZADRZEW jest tu zawsze NULL w bazie).
     with Session(engine) as session:
+        # ma_drzewa musi filtrować DOKŁADNIE ten sam zakres lat co główne
+        # zapytanie - stąd JOIN z ADRES_POW tutaj też (DRZEWA_OD_7 samo nie
+        # ma kolumny DATA), mimo że wynik ma_drzewa nie jest bezpośrednio
+        # zwracany.
         ma_drzewa = (
             select(DRZEWA_OD_7.NR_PODPOW)
-            .where(DRZEWA_OD_7.NR_CYKLU == nr_cykl, DRZEWA_OD_7.WAR != 10)
+            .join(ADRES_POW,
+                (ADRES_POW.NR_PODPOW == DRZEWA_OD_7.NR_PODPOW) &
+                (ADRES_POW.NR_CYKLU == DRZEWA_OD_7.NR_CYKLU))
+            .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end), DRZEWA_OD_7.WAR != 10)
             .distinct()
         ).subquery()
 
@@ -192,7 +220,7 @@ def query_mlode_uprawy(nr_cykl: int = None):
                 (OBL_ADRES_POW.NR_PODPOW == ADRES_POW.NR_PODPOW) &
                 (OBL_ADRES_POW.NR_CYKLU == ADRES_POW.NR_CYKLU))
             .outerjoin(ma_drzewa, ma_drzewa.c.NR_PODPOW == ADRES_POW.NR_PODPOW)
-            .where(ADRES_POW.NR_CYKLU == nr_cykl,
+            .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
                    ADRES_POW.R_POW_PR == 1,
                    ADRES_POW.WIEK_PAN_PR <= MAX_WIEK_MLODEJ_UPRAWY,
                    ADRES_POW.GAT_PAN_PR.isnot(None),
@@ -202,11 +230,11 @@ def query_mlode_uprawy(nr_cykl: int = None):
         ).all()
 
 
-def query_drzewostany_uszk(nr_cykl: int = None):
+def query_drzewostany_uszk(rok_start: int = None, rok_end: int = None):
     with Session(engine) as session:
         powierzchnie_uszk = session.exec(
                                 select(
-                                   ADRES_POW.NR_PUNKTU, 
+                                   ADRES_POW.NR_PUNKTU,
                                    ADRES_POW.NR_PODPOW,
                                    ADRES_POW.GAT_PAN_PR,
                                    OBL_ADRES_POW.WSP_Z,
@@ -215,7 +243,7 @@ def query_drzewostany_uszk(nr_cykl: int = None):
             .join(OBL_ADRES_POW,
                 (ADRES_POW.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
                 (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU)) \
-            .where(ADRES_POW.NR_CYKLU == nr_cykl,
+            .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
                    ADRES_POW.R_POW_PR == 1,
                    ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX)
         ).all()
@@ -223,7 +251,7 @@ def query_drzewostany_uszk(nr_cykl: int = None):
 
 #Martwe - średnia ważona wsp Z w trakcie
 
-def martwe_drewno(nr_cykl: int = None):
+def martwe_drewno(rok_start: int = None, rok_end: int = None):
     # MIAZSZOSC w OBL_DRZEWA_MARTWE to surowa objętość zmierzona na kole
     # próbnym o stałym promieniu 11,28 m (pole = pi*11,28^2 ~= 399,73 m^2 =
     # ~0,04 ha). WSP_Z to udział podpowierzchni w pełnej powierzchni próbnej
@@ -254,13 +282,17 @@ def martwe_drewno(nr_cykl: int = None):
                 (ADRES_POW.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
                 (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
             .where(
-                OBL_ADRES_POW.NR_CYKLU == nr_cykl,
+                _filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
                 ADRES_POW.R_POW_PR.in_([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
                 ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX
             )
             .group_by(NR_Traktu_z)
         ).cte('z_pow_les')
 
+        # ADRES_POW dociągnięty tu tylko po to, żeby filtrować DRZEWA_MARTWE
+        # po tym samym zakresie lat co z_pow_les (DRZEWA_MARTWE nie ma
+        # kolumny DATA) - martwe drewno z podpowierzchni poza [rok_start,
+        # rok_end] albo o odrzucanym STATUS_GRUNTU nie powinno wejść do sumy.
         NR_Traktu_m = (OBL_ADRES_POW.NR_PODPOW // literal_column('1000')).label('NR_Traktu')
         martwe = (
             select(
@@ -272,7 +304,11 @@ def martwe_drewno(nr_cykl: int = None):
             .join(OBL_ADRES_POW,
                 (DRZEWA_MARTWE.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
                 (DRZEWA_MARTWE.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
-            .where(DRZEWA_MARTWE.NR_CYKLU == nr_cykl)
+            .join(ADRES_POW,
+                (DRZEWA_MARTWE.NR_PODPOW == ADRES_POW.NR_PODPOW) &
+                (DRZEWA_MARTWE.NR_CYKLU == ADRES_POW.NR_CYKLU))
+            .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
+                   ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX)
             .group_by(NR_Traktu_m, OBL_ADRES_POW.NR_PODPOW, DRZEWA_MARTWE.TYP)
         ).cte('martwe')
 
@@ -292,12 +328,12 @@ def martwe_drewno(nr_cykl: int = None):
         return wynik
 
 
-def query_all_wisl_plots(nr_cykl):
+def query_all_wisl_plots(rok_start, rok_end):
     with Session(engine) as session:
         sql = text(f'''
             SELECT * FROM "PUNKTY_TRAKTU" AS pk
             INNER JOIN "ADRES_POW" as ap on ap."NR_PUNKTU" = pk."NR_PUNKTU"
-            WHERE ap."NR_CYKLU" = {nr_cykl}
+            WHERE CAST(SUBSTRING(ap."DATA", 1, 4) AS INT) BETWEEN {rok_start} AND {rok_end}
               AND ap."STATUS_GRUNTU" <= {STATUS_GRUNTU_MAX}
         ''')
         return session.execute(sql).all()

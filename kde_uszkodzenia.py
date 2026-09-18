@@ -28,22 +28,23 @@ PROG_MIN_TLA = 0.01
 # kde_gat.py - poniżej tej liczby traktów mapa w ogóle nie jest generowana.
 MIN_TRAKTOW_WIARYGODNY = 100
 
-def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = None):
-    res = query_drzewostany_uszk(nr_cykl=nr_cykl)
+def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatunek: str = None):
+    okres = f"{rok_start}-{rok_end}"
+    res = query_drzewostany_uszk(rok_start=rok_start, rok_end=rok_end)
     if not res:
-        print(f"Brak danych z bazy dla cyklu {nr_cykl}.")
+        print(f"Brak danych z bazy dla lat {okres}.")
         return
 
     df = pd.DataFrame(res, columns=['NR_PUNKTU', 'NR_PODPOW', 'GAT_PAN_PR','WSP_Z','NASIL_USZK', 'PRZYCZ_USZK'])
     df['NR_TRAKTU'] = df['NR_PUNKTU'].str[:-1]
-    
+
     trakty = gpd.read_file('data/trakty_wsp.geojson')
 
     if gatunek is not None:
         df = df[df['GAT_PAN_PR'] == gatunek].copy()
 
     if df.empty:
-        print(f"Brak danych po odfiltrowaniu dla gatunku w cyklu {nr_cykl}.")
+        print(f"Brak danych po odfiltrowaniu dla gatunku w latach {okres}.")
         return
 
     tlo = df.groupby('NR_TRAKTU').agg({'WSP_Z':'sum'}).reset_index()
@@ -85,13 +86,13 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
     gdf_model = gdf_model[gdf_model.geometry.notnull() & (gdf_model['waga_tlo'] > 0)].copy()
 
     if len(gdf_model) < 5:
-        print(f"Zbyt mało danych przestrzennych do wyznaczenia KDE (cykl {nr_cykl}, znaleziono: {len(gdf_model)}).")
+        print(f"Zbyt mało danych przestrzennych do wyznaczenia KDE (lata {okres}, znaleziono: {len(gdf_model)}).")
         return
 
     if len(gdf_model) < MIN_TRAKTOW_WIARYGODNY:
         print(
             f"Pominięto mapę: tylko {len(gdf_model)} traktów (wymagane min. "
-            f"{MIN_TRAKTOW_WIARYGODNY}, cykl {nr_cykl})."
+            f"{MIN_TRAKTOW_WIARYGODNY}, lata {okres})."
         )
         return
 
@@ -146,7 +147,7 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
     ryzyko_valid = ryzyko[~np.isnan(ryzyko)]
 
     if ryzyko_valid.size == 0:
-        print(f"Brak poprawnych wartości ryzyka dla cyklu {nr_cykl}.")
+        print(f"Brak poprawnych wartości ryzyka dla lat {okres}.")
         return
 
     prog_ryzyka = np.percentile(ryzyko_valid, PERCENTYL_RYZYKA)
@@ -203,7 +204,7 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
     
     tytul_gatunek = f" | Gatunek: {gatunek}" if gatunek else ""
     nasil_opis = prog_nasil_uszk if prog_nasil_uszk is not None else 0
-    ax.set_title(f"Ryzyko uszkodzeń (Cykl: {nr_cykl}, próg nasil. > {nasil_opis}){tytul_gatunek}", fontsize=11)
+    ax.set_title(f"Ryzyko uszkodzeń (Lata: {okres}, próg nasil. > {nasil_opis}){tytul_gatunek}", fontsize=11)
     ax.set_xlabel("X [m] (EPSG:2180)")
     ax.set_ylabel("Y [m] (EPSG:2180)")
     ax.ticklabel_format(style='plain', useOffset=False)
@@ -229,7 +230,8 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
 
     gdf_zasieg = gpd.GeoDataFrame(
         [{
-            'cykl': nr_cykl,
+            'rok_start': rok_start,
+            'rok_end': rok_end,
             'gatunek': gatunek if gatunek else 'Wszystkie',
             'prog_nasilenia': prog_nasil_uszk if prog_nasil_uszk is not None else 0,
             'percentyl': PERCENTYL_RYZYKA,
@@ -242,18 +244,18 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
 
     sufix_gat = f"_{gatunek}" if gatunek else ""
     sufix_nasil = f"_nasil{prog_nasil_uszk}" if prog_nasil_uszk is not None else ""
-    
-    file_prefix = f"ryzyko_cykl{nr_cykl}{sufix_gat}{sufix_nasil}"
+
+    file_prefix = f"ryzyko_{okres}{sufix_gat}{sufix_nasil}"
 
     gdf_zasieg.to_crs(CRS_ZAPISU).to_file(
         f"KDE_uszkodzenia/{file_prefix}.geojson", driver="GeoJSON"
     )
     fig.savefig(f"KDE_uszkodzenia/{file_prefix}.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print(f"Zakończono pomyślnie. Zapisano wyniki dla cyklu {nr_cykl}.")
+    print(f"Zakończono pomyślnie. Zapisano wyniki dla lat {okres}.")
 
 
 if __name__ == "__main__":
-    cykle = [1, 2, 3, 4]
-    for cykl in cykle:
-        uszkodzenia(nr_cykl=cykl, prog_nasil_uszk=3, gatunek=None)
+    from Wisl_quert import CYKLE_LATA
+    for rok_start, rok_end in CYKLE_LATA.values():
+        uszkodzenia(rok_start=rok_start, rok_end=rok_end, prog_nasil_uszk=3, gatunek=None)

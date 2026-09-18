@@ -154,10 +154,15 @@ KOLORY_PROGOW = {
 }
 
 
-def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_UDZIALU):
+def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, miara=None, progi=PROGI_UDZIALU):
     """
     Lokalny, wygładzony przestrzennie udział gatunku, z zaznaczeniem obszarów
     przekraczających stałe progi udziału.
+
+    rok_start, rok_end - zakres lat wykonania pomiaru (ADRES_POW.DATA), a nie
+        numer formalnego cyklu WISL. Cykle są rozłączne (Wisl_quert.CYKLE_LATA:
+        1=2005-2009, 2=2010-2014, 3=2015-2019, 4=2020-2025), ale zakres można
+        dobrać dowolnie - np. tylko część cyklu albo kilka cykli naraz.
 
     drzewostany=True  - licznik ograniczony do powierzchni, na których gatunek
         DOMINUJE (udział miąższości >= 60%): mapa zasięgu drzewostanów danego
@@ -196,19 +201,20 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
     if miara == 'powierzchnia' and not drzewostany:
         print(
             f"Pominięto mapę: miara powierzchniowa nie jest dostępna dla trybu "
-            f"gatunku z domieszkami (gatunek {gat}, cykl {cykl}) - WISL nie podaje "
-            f"powierzchniowego udziału gatunku w drzewostanie mieszanym."
+            f"gatunku z domieszkami (gatunek {gat}, lata {rok_start}-{rok_end}) - "
+            f"WISL nie podaje powierzchniowego udziału gatunku w drzewostanie mieszanym."
         )
         return
 
     adnotacja = "drzewostany" if drzewostany else "gatunek"
+    okres = f"{rok_start}-{rok_end}"
 
     # ==============================================================================
     # 1. DANE: LICZNIK (GATUNEK) I MIANOWNIK (CAŁA POWIERZCHNIA LEŚNA)
     # ==============================================================================
-    udzial_gat = query_udzial_gat(gat, cykl)
+    udzial_gat = query_udzial_gat(gat, rok_start, rok_end)
     if not udzial_gat:
-        print(f"Brak danych z bazy dla gatunku {gat} w cyklu {cykl}.")
+        print(f"Brak danych z bazy dla gatunku {gat} w latach {okres}.")
         return
 
     df_gat = pd.DataFrame(udzial_gat, columns=[
@@ -222,9 +228,9 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
     if drzewostany:
         df_gat = df_gat.query("UDZIAL_MIAZSZOSC >= 0.6")
 
-    tlo = query_tlo_lasu(cykl)
+    tlo = query_tlo_lasu(rok_start, rok_end)
     if not tlo:
-        print(f"Brak danych tła dla cyklu {cykl}.")
+        print(f"Brak danych tła dla lat {okres}.")
         return
     df_tlo = pd.DataFrame(tlo, columns=['NR_PODPOW', 'waga_tlo'])
 
@@ -246,7 +252,7 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
         # podgatunków jak w SQL. Rozłączne z df_gat z definicji (query_mlode_uprawy
         # wymaga braku drzew >=7cm, df_gat wymaga ich obecności), więc concat
         # bez ryzyka zdublowania podpowierzchni.
-        mlode = query_mlode_uprawy(cykl)
+        mlode = query_mlode_uprawy(rok_start, rok_end)
         if mlode:
             df_mlode = pd.DataFrame(mlode, columns=['NR_PODPOW', 'GAT_PAN_PR', 'waga_tlo'])
             maska_gat = (df_mlode['GAT_PAN_PR'] == gat) | df_mlode['GAT_PAN_PR'].str.startswith(gat + '.')
@@ -262,7 +268,7 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
         df_gat['waga_gat'] = df_gat['UDZIAL_MIAZSZOSC'] * df_gat['waga_tlo']
 
     if df_gat.empty:
-        print(f"Brak powierzchni po odfiltrowaniu ({adnotacja}) dla gatunku {gat} w cyklu {cykl}.")
+        print(f"Brak powierzchni po odfiltrowaniu ({adnotacja}) dla gatunku {gat} w latach {okres}.")
         return
 
     # ==============================================================================
@@ -297,13 +303,13 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
     n_traktow_gat = int(maska_gat.sum())
 
     if len(gdf_model) < 5:
-        print(f"Zbyt mało danych przestrzennych do wyznaczenia KDE (cykl {cykl}, znaleziono: {len(gdf_model)}).")
+        print(f"Zbyt mało danych przestrzennych do wyznaczenia KDE (lata {okres}, znaleziono: {len(gdf_model)}).")
         return
 
     if n_traktow_gat < MIN_TRAKTOW_WIARYGODNY:
         print(
             f"Pominięto mapę: gatunek {gat} ({adnotacja}) występuje tylko na "
-            f"{n_traktow_gat} traktach (wymagane min. {MIN_TRAKTOW_WIARYGODNY}, cykl {cykl})."
+            f"{n_traktow_gat} traktach (wymagane min. {MIN_TRAKTOW_WIARYGODNY}, lata {okres})."
         )
         return
 
@@ -350,7 +356,7 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
     wartosci_valid = udzial_gatunku[~np.isnan(udzial_gatunku)]
 
     if wartosci_valid.size == 0:
-        print(f"Brak poprawnych wartości udziału dla gatunku {gat} w cyklu {cykl}.")
+        print(f"Brak poprawnych wartości udziału dla gatunku {gat} w latach {okres}.")
         return
 
     max_udzialu = float(np.nanmax(wartosci_valid))
@@ -361,13 +367,13 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
 
     if not progi_udzialu:
         print(
-            f"Gatunek {gat} ({adnotacja}), cykl {cykl}: udział nie przekracza żadnego z progów "
+            f"Gatunek {gat} ({adnotacja}), lata {okres}: udział nie przekracza żadnego z progów "
             f"{sorted(set(progi))} (max={max_udzialu:.3f}) - pomijam mapę."
         )
         return
 
     print(
-        f"Gatunek: {gat} ({adnotacja}, {miara}) | Cykl: {cykl} | n_traktow={len(gdf_model)} "
+        f"Gatunek: {gat} ({adnotacja}, {miara}) | Lata: {okres} | n_traktow={len(gdf_model)} "
         f"(z gatunkiem: {n_traktow_gat}) | udział krajowy={wspolczynnik_korekty_skali:.3f} | "
         f"max lokalny={max_udzialu:.3f}"
     )
@@ -519,7 +525,7 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
     ax.set_title(
         f"Udział gatunku {gat} w {opis_miary} - zakresy "
         f"{', '.join(etykieta_pasma(i).replace(f' {jednostka}', '') for i in range(len(progi_udzialu)))} "
-        f"(Cykl: {cykl} | {adnotacja})",
+        f"(Lata: {okres} | {adnotacja})",
         fontsize=11,
     )
     ax.set_xlabel("X [m] (PUWG92 / EPSG:2180)")
@@ -564,7 +570,8 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
         [
             {
                 'gatunek': gat,
-                'cykl': cykl,
+                'rok_start': rok_start,
+                'rok_end': rok_end,
                 'typ_zasiegu': adnotacja,
                 'miara': miara,
                 'prog_udzialu': prog,
@@ -586,17 +593,17 @@ def plot_kde_for_species(gat, cykl=4, drzewostany=True, miara=None, progi=PROGI_
 
     # Eksport do EPSG:4326 (WGS84) dla portalu webowego / Folium
     gdf_zasieg.to_crs(CRS_ZAPISU).to_file(
-        f"KDE_gatunki/zasieg_{gat}_cykl_{cykl}_{adnotacja}_{miara}_epsg4326.geojson", driver="GeoJSON"
+        f"KDE_gatunki/zasieg_{gat}_{okres}_{adnotacja}_{miara}_epsg4326.geojson", driver="GeoJSON"
     )
-    fig.savefig(f"KDE_gatunki/mapa_{gat}_cykl_{cykl}_{adnotacja}_{miara}.png",
+    fig.savefig(f"KDE_gatunki/mapa_{gat}_{okres}_{adnotacja}_{miara}.png",
                 dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print(f"Zakończono pomyślnie. Zapisano wyniki dla gatunku {gat} ({adnotacja}, {miara}), cykl {cykl}.")
+    print(f"Zakończono pomyślnie. Zapisano wyniki dla gatunku {gat} ({adnotacja}, {miara}), lata {okres}.")
 
 
 if __name__ == "__main__":
+    from Wisl_quert import CYKLE_LATA
     gatunki = ['SO', 'ŚW', 'JD', 'MD', 'DB', 'BK', 'BRZ', 'OL']
-    cykle = [1, 2, 3, 4]
     for gat in gatunki:
-        for cykl in cykle:
-            plot_kde_for_species(gat=gat, cykl=cykl, drzewostany=True)
+        for rok_start, rok_end in CYKLE_LATA.values():
+            plot_kde_for_species(gat=gat, rok_start=rok_start, rok_end=rok_end, drzewostany=True)

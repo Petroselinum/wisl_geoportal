@@ -23,22 +23,23 @@ CRS_OBLICZENIOWY = "EPSG:2180"
 # ogóle nie jest generowana.
 MIN_TRAKTOW_WIARYGODNY = 100
 
-def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = None):
-    res = query_drzewostany_uszk(nr_cykl=nr_cykl)
+def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatunek: str = None):
+    okres = f"{rok_start}-{rok_end}"
+    res = query_drzewostany_uszk(rok_start=rok_start, rok_end=rok_end)
     if not res:
-        print(f"Brak danych z bazy dla cyklu {nr_cykl}.")
+        print(f"Brak danych z bazy dla lat {okres}.")
         return
 
     df = pd.DataFrame(res, columns=['NR_PUNKTU', 'NR_PODPOW', 'GAT_PAN_PR', 'WSP_Z', 'NASIL_USZK', 'PRZYCZ_USZK'])
     df['NR_TRAKTU'] = df['NR_PUNKTU'].str[:-1]
-    
+
     trakty = gpd.read_file('data/trakty_wsp.geojson')
 
     if gatunek is not None:
         df = df[df['GAT_PAN_PR'] == gatunek].copy()
 
     if df.empty:
-        print(f"Brak danych po odfiltrowaniu dla gatunku w cyklu {nr_cykl}.")
+        print(f"Brak danych po odfiltrowaniu dla gatunku w latach {okres}.")
         return
 
     tlo = df.groupby('NR_TRAKTU').agg({'WSP_Z': 'sum'}).reset_index()
@@ -69,13 +70,13 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
     gdf_model = gdf_model[gdf_model.geometry.notnull() & (gdf_model['waga_tlo'] > 0)].copy()
 
     if len(gdf_model) < 5:
-        print(f"Zbyt mało danych dla cyklu {nr_cykl}.")
+        print(f"Zbyt mało danych dla lat {okres}.")
         return
 
     if len(gdf_model) < MIN_TRAKTOW_WIARYGODNY:
         print(
             f"Pominięto mapę: tylko {len(gdf_model)} traktów (wymagane min. "
-            f"{MIN_TRAKTOW_WIARYGODNY}, cykl {nr_cykl})."
+            f"{MIN_TRAKTOW_WIARYGODNY}, lata {okres})."
         )
         return
 
@@ -105,12 +106,12 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
 
     sufix_gat = f"_{gatunek}" if gatunek else ""
     sufix_nasil = f"_nasil{prog_nasil_uszk}" if prog_nasil_uszk is not None else ""
-    file_prefix = f"ryzyko_cykl{nr_cykl}{sufix_gat}{sufix_nasil}"
+    file_prefix = f"ryzyko_{okres}{sufix_gat}{sufix_nasil}"
 
     # ==============================================================================
     # 2. WYWOŁANIE SKRYPTU R
     # ==============================================================================
-    print(f"Obliczanie istotności statystycznej w R (sparr) dla cyklu {nr_cykl}...")
+    print(f"Obliczanie istotności statystycznej w R (sparr) dla lat {okres}...")
     try:
         subprocess.run(
             [RSCRIPT_PATH, "policz_ryzyko.R", file_prefix],
@@ -166,7 +167,7 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
 
     tytul_gatunek = f" | Gatunek: {gatunek}" if gatunek else ""
     nasil_opis = prog_nasil_uszk if prog_nasil_uszk is not None else 0
-    ax.set_title(f"Istotne ryzyko uszkodzeń p < 0.05 (Cykl: {nr_cykl}, próg > {nasil_opis}){tytul_gatunek}", fontsize=11)
+    ax.set_title(f"Istotne ryzyko uszkodzeń p < 0.05 (Lata: {okres}, próg > {nasil_opis}){tytul_gatunek}", fontsize=11)
     # Wynik eksploracyjny: p<0.05 liczone niezależnie w każdym pikselu siatki,
     # bez korekty na wielokrotne testowanie (patrz policz_ryzyko.R) - to
     # akceptowane w literaturze ograniczenie metody tolerance contours
@@ -197,9 +198,9 @@ def uszkodzenia(nr_cykl: int = 1, prog_nasil_uszk: int = None, gatunek: str = No
 
     fig.savefig(f"KDE_uszkodzenia_ryzyko/{file_prefix}_sparr.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print(f"Zakończono pomyślnie. Wyniki z testem sparr zapisano dla cyklu {nr_cykl}.")
+    print(f"Zakończono pomyślnie. Wyniki z testem sparr zapisano dla lat {okres}.")
 
 if __name__ == "__main__":
-    cykle = [1,2,3,4]
-    for cykl in cykle:
-        uszkodzenia(nr_cykl=cykl, prog_nasil_uszk=3, gatunek='ŚW')
+    from Wisl_quert import CYKLE_LATA
+    for rok_start, rok_end in CYKLE_LATA.values():
+        uszkodzenia(rok_start=rok_start, rok_end=rok_end, prog_nasil_uszk=3, gatunek='ŚW')

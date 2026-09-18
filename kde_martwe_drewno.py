@@ -84,14 +84,17 @@ KOLORY_PROGOW_M3HA = {
 }
 
 
-def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[float] = PROGI_ZASOBNOSCI_M3HA):
+def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | None = None, progi: list[float] = PROGI_ZASOBNOSCI_M3HA):
     """
     Lokalna, wygładzona przestrzennie średnia zasobność martwego drewna
     (m3/ha), z zaznaczeniem obszarów przekraczających kilka stałych progów
     zasobności (domyślnie >5, >10, >15, >20 m3/ha).
 
-    Wisl_quert.martwe_drewno(nr_cykl) zwraca dane per trakt i per TYP
-    martwego drewna (1-3 leżące, 4 posusz, 5 złom — patrz dokumentacja
+    rok_start, rok_end - zakres lat wykonania pomiaru (ADRES_POW.DATA), nie
+        numer formalnego cyklu WISL (patrz Wisl_quert.CYKLE_LATA).
+
+    Wisl_quert.martwe_drewno(rok_start, rok_end) zwraca dane per trakt i per
+    TYP martwego drewna (1-3 leżące, 4 posusz, 5 złom — patrz dokumentacja
     WISL), już podzielone przez SUMA_WSP_Z traktu (SR_MIAZSZOSC to
     gotowa średnia ważona na poziomie podpowierzchni, zagregowana do
     traktu) — ale SUMA_WSP_Z jest też zwracane osobno, bo potrzebujemy
@@ -109,15 +112,16 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[flo
         (KOLORY_PROGOW_M3HA), więc mapy różnych cykli/gatunków są
         porównywalne wizualnie.
     """
-    res = martwe_drewno(nr_cykl=nr_cykl)
+    okres = f"{rok_start}-{rok_end}"
+    res = martwe_drewno(rok_start=rok_start, rok_end=rok_end)
     if not res:
-        print(f"Brak danych z bazy dla cyklu {nr_cykl}.")
+        print(f"Brak danych z bazy dla lat {okres}.")
         return
 
     df = pd.DataFrame(res, columns=['NR_TRAKTU', 'TYP', 'SR_MIAZSZOSC', 'SUMA_WSP_Z'])
 
     if df.empty:
-        print(f"Brak danych dla cyklu {nr_cykl}.")
+        print(f"Brak danych dla lat {okres}.")
         return
 
     # Pełna populacja (tło) — KAŻDY trakt z z_pow_les pojawia się co najmniej
@@ -146,13 +150,13 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[flo
     gdf_model = gdf_model[gdf_model.geometry.notnull() & (gdf_model['SUMA_WSP_Z'] > 0)].copy()
 
     if len(gdf_model) < 5:
-        print(f"Zbyt mało danych przestrzennych do wyznaczenia KDE (cykl {nr_cykl}, znaleziono: {len(gdf_model)}).")
+        print(f"Zbyt mało danych przestrzennych do wyznaczenia KDE (lata {okres}, znaleziono: {len(gdf_model)}).")
         return
 
     if len(gdf_model) < MIN_TRAKTOW_WIARYGODNY:
         print(
             f"Pominięto mapę: tylko {len(gdf_model)} traktów (wymagane min. "
-            f"{MIN_TRAKTOW_WIARYGODNY}, cykl {nr_cykl})."
+            f"{MIN_TRAKTOW_WIARYGODNY}, lata {okres})."
         )
         return
 
@@ -216,24 +220,24 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[flo
     wartosci_valid = srednia_zasobnosc[~np.isnan(srednia_zasobnosc)]
 
     if wartosci_valid.size == 0:
-        print(f"Brak poprawnych wartości zasobności dla cyklu {nr_cykl}.")
+        print(f"Brak poprawnych wartości zasobności dla lat {okres}.")
         return
 
     max_zasobnosci = float(np.nanmax(wartosci_valid))
 
-    # Progi rosnąco, ograniczone do tych faktycznie osiągniętych w tym cyklu
+    # Progi rosnąco, ograniczone do tych faktycznie osiągniętych w tym okresie
     # (próg >= max nie wyznaczyłby żadnego obszaru na contourf/contour).
     progi_zasobnosci = sorted(p for p in set(progi) if p < max_zasobnosci)
 
     if not progi_zasobnosci:
         print(
-            f"Cykl {nr_cykl}: zasobność nie przekracza żadnego z progów {sorted(set(progi))} "
+            f"Lata {okres}: zasobność nie przekracza żadnego z progów {sorted(set(progi))} "
             f"m3/ha (max={max_zasobnosci:.2f} m3/ha) - pomijam mapę."
         )
         return
 
     print(
-        f"Martwe drewno | Cykl: {nr_cykl} | n_traktow={len(gdf_model)} | "
+        f"Martwe drewno | Lata: {okres} | n_traktow={len(gdf_model)} | "
         f"srednia krajowa={np.nanmean(wartosci_valid):.2f} m3/ha | "
         + " | ".join(f"> {prog:.0f} m3/ha" for prog in progi_zasobnosci)
         + f" | max={max_zasobnosci:.2f} m3/ha"
@@ -393,7 +397,7 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[flo
         for i, prog in enumerate(progi_zasobnosci)
     )
     ax.set_title(
-        f"Zasobność martwego drewna — zakresy {zakresy_opis} m³/ha (Cykl: {nr_cykl})",
+        f"Zasobność martwego drewna — zakresy {zakresy_opis} m³/ha (Lata: {okres})",
         fontsize=11,
     )
     ax.set_xlabel("X [m] (EPSG:2180)")
@@ -444,7 +448,8 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[flo
     gdf_zasieg = gpd.GeoDataFrame(
         [
             {
-                'cykl': nr_cykl,
+                'rok_start': rok_start,
+                'rok_end': rok_end,
                 'typ_martwego_drewna': typ if typ is not None else 'wszystkie',
                 'prog_zasobnosci_m3ha': prog,
                 'srednia_krajowa_m3ha': float(np.nanmean(wartosci_valid)),
@@ -460,17 +465,17 @@ def martwe_drewno_mapa(nr_cykl: int = 1, typ: int | None = None, progi: list[flo
 
     sufiks_typ = f"_typ{typ}" if typ is not None else ""
     sufiks_prog = "_".join(str(int(p)) for p in progi_zasobnosci)
-    file_prefix = f"martwe_drewno_cykl{nr_cykl}{sufiks_typ}_prog{sufiks_prog}"
+    file_prefix = f"martwe_drewno_{okres}{sufiks_typ}_prog{sufiks_prog}"
 
     gdf_zasieg.to_crs(CRS_ZAPISU).to_file(
         f"KDE_martwe_drewno/{file_prefix}.geojson", driver="GeoJSON"
     )
     fig.savefig(f"KDE_martwe_drewno/{file_prefix}.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print(f"Zakończono pomyślnie. Zapisano wyniki dla cyklu {nr_cykl}.")
+    print(f"Zakończono pomyślnie. Zapisano wyniki dla lat {okres}.")
 
 
 if __name__ == "__main__":
-    cykle = [1, 2, 3, 4]
-    for cykl in cykle:
-        martwe_drewno_mapa(nr_cykl=cykl)
+    from Wisl_quert import CYKLE_LATA
+    for rok_start, rok_end in CYKLE_LATA.values():
+        martwe_drewno_mapa(rok_start=rok_start, rok_end=rok_end)
