@@ -232,7 +232,18 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
     if not tlo:
         print(f"Brak danych tła dla lat {okres}.")
         return
-    df_tlo = pd.DataFrame(tlo, columns=['NR_PODPOW', 'waga_tlo'])
+    df_tlo = pd.DataFrame(tlo, columns=['NR_PODPOW', 'NR_CYKLU', 'waga_tlo'])
+
+    # Klucz rekordu to para (NR_PODPOW, NR_CYKLU) - NR_PODPOW sam nie jest
+    # unikalny między cyklami (82% powtarza się w kolejnych cyklach). Złączenie
+    # po samym NR_PODPOW przy zakresie lat obejmującym kilka cykli dawało
+    # iloczyn kartezjański (sprawdzone: dla 2015-2025 licznik 1,92x, mianownik
+    # 2,00x zawyżony). NR_CYKLU normalizujemy do int, bo OBL_ADRES_POW trzyma
+    # go jako NCHAR, a DRZEWA_OD_7/ADRES_POW jako INTEGER.
+    KLUCZ = ['NR_PODPOW', 'NR_CYKLU']
+    for df in (df_gat, df_tlo):
+        df['NR_PODPOW'] = pd.to_numeric(df['NR_PODPOW']).astype('int64')
+        df['NR_CYKLU'] = pd.to_numeric(df['NR_CYKLU']).astype('int64')
 
     # Wagę licznika bierzemy z TŁA (waga_tlo = WSP_Z), a nie z
     # reprezentatywnosc_gat liczonej w SQL (ta wciąż zawiera ZADRZEW - służy
@@ -240,7 +251,7 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
     # Tylko wtedy licznik i mianownik stoją na dokładnie tej samej wadze.
     # Podpowierzchnie z drzewami danego gatunku są ścisłym podzbiorem tła
     # (R_POW_PR=1 jest podzbiorem KODY_R_POW_LAS), więc złączenie niczego nie gubi.
-    df_gat = df_gat.merge(df_tlo, on='NR_PODPOW', how='inner')
+    df_gat = df_gat.merge(df_tlo, on=KLUCZ, how='inner')
 
     if miara == 'powierzchnia':
         # Cała powierzchnia drzewostanu liczy się na rzecz gatunku, który go
@@ -254,12 +265,14 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
         # bez ryzyka zdublowania podpowierzchni.
         mlode = query_mlode_uprawy(rok_start, rok_end)
         if mlode:
-            df_mlode = pd.DataFrame(mlode, columns=['NR_PODPOW', 'GAT_PAN_PR', 'waga_tlo'])
+            df_mlode = pd.DataFrame(mlode, columns=['NR_PODPOW', 'NR_CYKLU', 'GAT_PAN_PR', 'waga_tlo'])
+            df_mlode['NR_PODPOW'] = pd.to_numeric(df_mlode['NR_PODPOW']).astype('int64')
+            df_mlode['NR_CYKLU'] = pd.to_numeric(df_mlode['NR_CYKLU']).astype('int64')
             maska_gat = (df_mlode['GAT_PAN_PR'] == gat) | df_mlode['GAT_PAN_PR'].str.startswith(gat + '.')
-            df_mlode_gat = df_mlode.loc[maska_gat, ['NR_PODPOW', 'waga_tlo']].copy()
+            df_mlode_gat = df_mlode.loc[maska_gat, KLUCZ + ['waga_tlo']].copy()
             df_mlode_gat['waga_gat'] = df_mlode_gat['waga_tlo']
             df_gat = pd.concat(
-                [df_gat[['NR_PODPOW', 'waga_tlo', 'waga_gat']], df_mlode_gat],
+                [df_gat[KLUCZ + ['waga_tlo', 'waga_gat']], df_mlode_gat],
                 ignore_index=True,
             )
     else:
@@ -383,7 +396,7 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
     # np. 5-10%, a nie "wszystko powyżej 5%". Wielokąty zapisywane do GeoJSON są
     # natomiast kumulatywne (zagnieżdżone) - tam prog_udzialu=0,05 to faktycznie
     # cały obszar powyżej 5%. Dwie różne konwencje w dwóch różnych wynikach.
-    jednostka = 'powierzchni' if miara == 'powierzchnia' else 'miąższości'
+    jednostka = 'powierzchni leśnej' if miara == 'powierzchnia' else 'miąższości'
 
     def etykieta_pasma(i):
         prog = progi_udzialu[i]
@@ -520,7 +533,7 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
     ax.set_ylim(ymin - MARGIN, ymax + MARGIN)
 
     ax.grid(True, linestyle='--', alpha=0.5, color='gray')
-    opis_miary = ("zadrzewionej powierzchni lasu" if miara == 'powierzchnia'
+    opis_miary = ("powierzchni leśnej" if miara == 'powierzchnia'
                   else "miąższości drzewostanów")
     ax.set_title(
         f"Udział gatunku {gat} w {opis_miary} - zakresy "
@@ -606,4 +619,4 @@ if __name__ == "__main__":
     gatunki = ['SO', 'ŚW', 'JD', 'MD', 'DB', 'BK', 'BRZ', 'OL']
     for gat in gatunki:
         for rok_start, rok_end in CYKLE_LATA:
-            plot_kde_for_species(gat=gat, rok_start=rok_start, rok_end=rok_end, drzewostany=True)
+            plot_kde_for_species(gat=gat, rok_start=rok_start, rok_end=rok_end, drzewostany=False)

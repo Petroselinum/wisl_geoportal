@@ -238,7 +238,7 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
 
     print(
         f"Martwe drewno | Lata: {okres} | n_traktow={len(gdf_model)} | "
-        f"srednia krajowa={np.nanmean(wartosci_valid):.2f} m3/ha | "
+        f"srednia krajowa={wspolczynnik_korekty_skali:.2f} m3/ha | "
         + " | ".join(f"> {prog:.0f} m3/ha" for prog in progi_zasobnosci)
         + f" | max={max_zasobnosci:.2f} m3/ha"
     )
@@ -452,7 +452,12 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
                 'rok_end': rok_end,
                 'typ_martwego_drewna': typ if typ is not None else 'wszystkie',
                 'prog_zasobnosci_m3ha': prog,
-                'srednia_krajowa_m3ha': float(np.nanmean(wartosci_valid)),
+                # Średnia WAŻONA POWIERZCHNIĄ (suma objętości / suma
+                # reprezentowanej powierzchni), a nie np.nanmean po oczkach
+                # siatki - ta druga to średnia z wygładzonej mapy po obszarze
+                # Polski, która przecenia rzadko próbkowane regiony i dla
+                # 2020-2025 zaniżała wynik o ~7% (11,60 zamiast 12,52 m3/ha).
+                'srednia_krajowa_m3ha': float(wspolczynnik_korekty_skali),
                 'max_zasobnosci_m3ha': max_zasobnosci,
                 'n_traktow': len(gdf_model),
                 'geometry': geom,

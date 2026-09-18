@@ -18,51 +18,79 @@ import contextily as cx
 CRS_OBLICZENIOWY = "EPSG:2180"
 CRS_ZAPISU = "EPSG:4326"
 
-# 95. percentyl wyodrębnia 5% siatki o najwyższym stosunku uszkodzeń do tła
-PERCENTYL_RYZYKA = 95
+# ==============================================================================
+# CO LICZY TEN SKRYPT
+# ==============================================================================
+# Lokalne, wygładzone przestrzennie ŚREDNIE NASILENIE USZKODZEŃ drzewostanów
+# [%] - estymator Nadaraya-Watson (iloraz dwóch KDE o wspólnym paśmie), ten
+# sam co w kde_martwe_drewno.py:
+#   f = KDE ważone WSP_Z * NASIL_USZK * 10 (tylko NASIL_USZK > prog)
+#   g = KDE ważone WSP_Z wszystkich zbadanych drzewostanów
+#   wynik = f/g * sum(waga_f)/sum(waga_g)
+# NASIL_USZK to skala ciągła (3 = 30%, 5 = 50%); poniżej 30% drzewostan uznaje
+# się za nieuszkodzony, stąd w bazie nie ma wartości 1-2. Drzewostany poniżej
+# progu wchodzą do średniej jako 0% - to ŚREDNIA po całej powierzchni lasu,
+# nie średnia tylko wśród uszkodzonych.
+#
+# Wcześniejsza wersja zaznaczała 95. percentyl ilorazu f/g. Percentyl to
+# wielkość WZGLĘDNA: mapa zawsze pokazywała 5% siatki, niezależnie od tego, czy
+# uszkodzeń było dużo, czy mało - a średnia krajowa zmienia się między okresami
+# prawie trzykrotnie (2005-2009: 3,8%, 2015-2019: 10,4%, 2020-2025: 5,7%).
+# Stałe progi w % (PROGI_NASILENIA_PROC) czynią mapy porównywalnymi między
+# okresami - ten sam problem i to samo rozwiązanie co w kde_gat.py.
+#
+# Usunięto też epsilon 1e-12 z mianownika: gęstości KDE w metrach są rzędu
+# 1e-12 (max tła 4,8e-12), więc "zabezpieczenie" było tego samego rzędu co
+# dane i zaniżało iloraz średnio o 27%, lokalnie o 57% - najsilniej tam, gdzie
+# tło jest słabe, czyli zmieniało kształt obszaru. Dzielenie przez zero i tak
+# wyklucza maska niskiego tła (PROG_MIN_TLA).
 
-# Próg minimalnego tła ustalony na 1% wartości maksymalnej tła
-PROG_MIN_TLA = 0.01
+PROG_MIN_TLA = 0.01           # poniżej tego ułamka maksimum gęstości tła nie ufamy ilorazowi (brzegi)
+MIN_TRAKTOW_WIARYGODNY = 100  # globalny próg wiarygodności modelu (ten sam co w pozostałych skryptach KDE)
 
-# Ten sam globalny próg wiarygodności modelu co w kde_martwe_drewno.py /
-# kde_gat.py - poniżej tej liczby traktów mapa w ogóle nie jest generowana.
-MIN_TRAKTOW_WIARYGODNY = 100
+PROGI_NASILENIA_PROC = [5, 10, 15, 20]
 
-def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatunek: str = None):
+# Kolor przypisany NA STAŁE do wartości progu - pasmo ma ten sam odcień
+# niezależnie od okresu i od tego, ile progów akurat się rysuje.
+KOLORY_PROGOW_PROC = {
+    5: plt.cm.YlOrRd(0.30),
+    10: plt.cm.YlOrRd(0.50),
+    15: plt.cm.YlOrRd(0.70),
+    20: plt.cm.YlOrRd(0.92),
+}
+
+
+def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatunek: str = None,
+                progi: list[float] = PROGI_NASILENIA_PROC):
     okres = f"{rok_start}-{rok_end}"
     res = query_drzewostany_uszk(rok_start=rok_start, rok_end=rok_end)
     if not res:
         print(f"Brak danych z bazy dla lat {okres}.")
         return
 
-    df = pd.DataFrame(res, columns=['NR_PUNKTU', 'NR_PODPOW', 'GAT_PAN_PR','WSP_Z','NASIL_USZK', 'PRZYCZ_USZK'])
+    df = pd.DataFrame(res, columns=['NR_PUNKTU', 'NR_PODPOW', 'GAT_PAN_PR', 'WSP_Z', 'NASIL_USZK', 'PRZYCZ_USZK'])
     df['NR_TRAKTU'] = df['NR_PUNKTU'].str[:-1]
 
     trakty = gpd.read_file('data/trakty_wsp.geojson')
 
     if gatunek is not None:
-        df = df[df['GAT_PAN_PR'] == gatunek].copy()
+        # Podgatunki (DB.S, DB.B, ...) jak gatunek bazowy - to samo dopasowanie
+        # co Wisl_quert._dopasowanie_gatunku.
+        maska = (df['GAT_PAN_PR'] == gatunek) | df['GAT_PAN_PR'].fillna('').str.startswith(gatunek + '.')
+        df = df[maska].copy()
 
     if df.empty:
         print(f"Brak danych po odfiltrowaniu dla gatunku w latach {okres}.")
         return
 
-    tlo = df.groupby('NR_TRAKTU').agg({'WSP_Z':'sum'}).reset_index()
+    tlo = df.groupby('NR_TRAKTU').agg({'WSP_Z': 'sum'}).reset_index()
 
-    if prog_nasil_uszk is not None:
-        df_uszk_filtr = df[df['NASIL_USZK'] > prog_nasil_uszk].copy()
-    else:
-        df_uszk_filtr = df[df['NASIL_USZK'] > 0].copy()
+    prog = prog_nasil_uszk if prog_nasil_uszk is not None else 0
+    df_uszk_filtr = df[df['NASIL_USZK'] > prog].copy()
 
-    # OBLICZAMY WAGĘ ILOŚCIOWĄ: Udział powierzchni * Stopień nasilenia
-    # ZAŁOŻENIE DO ZWERYFIKOWANIA: traktujemy NASIL_USZK jako wielkość
-    # liniową (klasa 4 = "4x" tyle uszkodzeń co klasa 1). Jeśli w metodyce
-    # WISL/BULiGL jest to kod klasy porządkowej (np. skala defoliacji typu
-    # ICP Forests 0-4), a nie wielkość ilorazowa, to mnożenie przez WSP_Z
-    # nie jest ściśle uzasadnione - do sprawdzenia w dokumentacji metodyki.
-    df_uszk_filtr['iloczyn_nasilenia'] = df_uszk_filtr['WSP_Z'] * df_uszk_filtr['NASIL_USZK']
+    # NASIL_USZK * 10 = nasilenie w %, ważone reprezentowaną powierzchnią.
+    df_uszk_filtr['iloczyn_nasilenia'] = df_uszk_filtr['WSP_Z'] * df_uszk_filtr['NASIL_USZK'] * 10
 
-    # Sumujemy iloczyny na poziomie każdego traktu
     df_uszk_trakty = df_uszk_filtr.groupby('NR_TRAKTU').agg(
         waga_uszk=('iloczyn_nasilenia', 'sum')
     ).reset_index()
@@ -74,14 +102,15 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     df_uszk_trakty['NR_TRAKTU'] = df_uszk_trakty['NR_TRAKTU'].astype(int).astype(str)
 
     # ==============================================================================
-    # 5. UTWORZENIE GEOPANDAS I PRZYGOTOWANIE WSPÓŁRZĘDNYCH DO KDE
+    # GEOMETRIA TRAKTÓW
     # ==============================================================================
+    # LEFT JOIN od tła: trakty bez uszkodzeń zostają z wagą 0 i poprawnie
+    # obniżają lokalną średnią przez swój wkład w mianowniku.
     df_model = pd.merge(tlo, df_uszk_trakty, on='NR_TRAKTU', how='left')
     df_model['waga_uszk'] = df_model['waga_uszk'].fillna(0.0)
     df_model = df_model.rename(columns={'WSP_Z': 'waga_tlo'})
 
     gdf_model = trakty_geom.merge(df_model, left_on='nr_traktu', right_on='NR_TRAKTU', how='inner')
-    
     gdf_model = gpd.GeoDataFrame(gdf_model, geometry='geometry', crs=trakty.crs).to_crs(CRS_OBLICZENIOWY)
     gdf_model = gdf_model[gdf_model.geometry.notnull() & (gdf_model['waga_tlo'] > 0)].copy()
 
@@ -96,10 +125,17 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
         )
         return
 
+    mask_uszk = gdf_model['waga_uszk'] > 0
+    if mask_uszk.sum() < 3:
+        print(f"Za mało traktów z uszkodzeniami do wyznaczenia KDE (lata {okres}: {int(mask_uszk.sum())}).")
+        return
+
     coords = np.vstack([gdf_model.geometry.x, gdf_model.geometry.y])
+    waga_tlo = gdf_model['waga_tlo'].to_numpy()
+    waga_f = gdf_model['waga_uszk'].to_numpy()
 
     # ==============================================================================
-    # 6. DEFINICJA SIATKI ORAZ GRANIC POLSKI
+    # SIATKA ORAZ GRANICE POLSKI
     # ==============================================================================
     poland = gpd.read_file("data/poland_land.geojson").to_crs(CRS_OBLICZENIOWY)
     poland_geom = poland.geometry.union_all()
@@ -111,84 +147,96 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     positions = np.vstack([X.ravel(), Y.ravel()])
 
     # ==============================================================================
-    # 7. OBLICZENIE KDE (TŁO I USZKODZENIA)
+    # KDE (WSPÓLNE PASMO) + KOREKTA SKALI NORMALIZACJI WAG
     # ==============================================================================
-    kernel_tlo = gaussian_kde(coords, bw_method='scott', weights=gdf_model['waga_tlo'])
-    f_tlo = kernel_tlo(positions).reshape(X.shape)
+    kernel_tlo = gaussian_kde(coords, weights=waga_tlo, bw_method='scott')
+    # Te same współrzędne co tło (trakty bez uszkodzeń z wagą 0 nic nie
+    # wnoszą do licznika) i wymuszone TO SAMO fizyczne pasmo - patrz
+    # kde_common.wymus_wspolne_pasmo.
+    kernel_f = gaussian_kde(coords, weights=waga_f)
+    wymus_wspolne_pasmo(kernel_f, kernel_tlo)
 
-    mask_uszk = gdf_model['waga_uszk'] > 0
-    if mask_uszk.sum() >= 3:
-        coords_uszk = coords[:, mask_uszk]
-        # Wymuszamy TO SAMO fizyczne pasmo co dla tła - sam `factor` na to
-        # nie wystarcza, bo scipy przelicza covariance na nowo z rozrzutu
-        # PRZEKAZANYCH punktów (patrz kde_common.wymus_wspolne_pasmo).
-        kernel_uszk = gaussian_kde(coords_uszk, weights=gdf_model.loc[mask_uszk, 'waga_uszk'])
-        wymus_wspolne_pasmo(kernel_uszk, kernel_tlo)
-        f_uszk = kernel_uszk(positions).reshape(X.shape)
-    else:
-        f_uszk = np.zeros_like(X)
+    # scipy normalizuje f i g NIEZALEŻNIE do całki=1 - bez tej korekty iloraz
+    # byłby przeskalowany przypadkowym współczynnikiem, a nie średnim
+    # nasileniem w %. Jednocześnie to jest średnia krajowa ważona powierzchnią.
+    wspolczynnik_korekty_skali = waga_f.sum() / waga_tlo.sum()
 
-    # ==============================================================================
-    # 8. WYZNACZENIE ILORAZU RYZYKA I PERCENTYLA
-    # ==============================================================================
+    f_est = kernel_f(positions).reshape(X.shape)
+    g_est = kernel_tlo(positions).reshape(X.shape)
+
     mask_polska = shapely.contains_xy(poland_geom, X, Y)
-    f_uszk[~mask_polska] = np.nan
-    f_tlo[~mask_polska] = np.nan
+    f_est[~mask_polska] = np.nan
+    g_est[~mask_polska] = np.nan
 
-    # ZABEZPIECZENIE PRZED EFEKTAMI BRZEGOWYMI I ZEROWYMI WARTOŚCIAMI
-    max_tla = np.nanmax(f_tlo)
-    mask_niskie_tlo = f_tlo < (PROG_MIN_TLA * max_tla)
+    max_tla = np.nanmax(g_est)
+    mask_niskie_tlo = g_est < (PROG_MIN_TLA * max_tla)
 
     with np.errstate(divide='ignore', invalid='ignore'):
-        # Dodanie epsilon chroniącego przed dzieleniem przez rygorystyczne zero
-        ryzyko = f_uszk / (f_tlo + 1e-12) 
-        
-    ryzyko[mask_niskie_tlo] = np.nan
-    ryzyko_valid = ryzyko[~np.isnan(ryzyko)]
+        nasilenie = (f_est / g_est) * wspolczynnik_korekty_skali
 
-    if ryzyko_valid.size == 0:
-        print(f"Brak poprawnych wartości ryzyka dla lat {okres}.")
+    nasilenie[mask_niskie_tlo] = np.nan
+    wartosci_valid = nasilenie[~np.isnan(nasilenie)]
+
+    if wartosci_valid.size == 0:
+        print(f"Brak poprawnych wartości nasilenia dla lat {okres}.")
         return
 
-    prog_ryzyka = np.percentile(ryzyko_valid, PERCENTYL_RYZYKA)
+    max_nasilenia = float(np.nanmax(wartosci_valid))
+
+    # Progi rosnąco, ograniczone do faktycznie osiągniętych w tym okresie.
+    progi_nasilenia = sorted(p for p in set(progi) if p < max_nasilenia)
+
+    if not progi_nasilenia:
+        print(
+            f"Lata {okres}: nasilenie nie przekracza żadnego z progów {sorted(set(progi))} % "
+            f"(max={max_nasilenia:.1f}%) - pomijam mapę."
+        )
+        return
+
+    print(
+        f"Uszkodzenia | Lata: {okres} | n_traktow={len(gdf_model)} "
+        f"(z uszkodzeniami: {int(mask_uszk.sum())}) | "
+        f"srednia krajowa={wspolczynnik_korekty_skali:.2f}% | max lokalny={max_nasilenia:.1f}%"
+    )
 
     # ==============================================================================
-    # 9. WIZUALIZACJA (MATPLOTLIB)
+    # WIZUALIZACJA I EKSTRAKCJA GEOMETRII
     # ==============================================================================
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.set_aspect('equal')
 
-    cf = ax.contourf(
-        X, Y, ryzyko,
-        cmap=plt.cm.autumn_r,
-        levels=[prog_ryzyka, np.nanmax(ryzyko_valid)],
-        alpha=0.6,
-    )
-    
-    kde_color = cf.get_facecolor()[0] if hasattr(cf, 'get_facecolor') else cf.collections[0].get_facecolor()[0]
+    kolory_pasm = [KOLORY_PROGOW_PROC[p] for p in progi_nasilenia]
 
-    ryzyko_contour = np.nan_to_num(ryzyko, nan=0.0)
+    ax.contourf(
+        X, Y, nasilenie,
+        levels=progi_nasilenia + [max_nasilenia],
+        colors=kolory_pasm,
+        alpha=0.7,
+    )
+
+    nasilenie_contour = np.nan_to_num(nasilenie, nan=0.0)
     cs = ax.contour(
-        X, Y, ryzyko_contour,
-        levels=[prog_ryzyka],
+        X, Y, nasilenie_contour,
+        levels=progi_nasilenia,
         colors=['#8b0000'],
-        linewidths=1.5,
+        linewidths=1.2,
     )
 
-    polygons = []
-    paths = cs.get_paths() if hasattr(cs, 'get_paths') else cs.collections[0].get_paths()
-    for path in paths:
-        for poly_pts in path.to_polygons():
-            if len(poly_pts) >= 3:
-                poly = Polygon(poly_pts)
+    # Wielokąty KUMULATYWNE (zagnieżdżone): obszar progu 10% leży w całości
+    # wewnątrz obszaru progu 5% - jak w kde_gat.py / kde_martwe_drewno.py.
+    zasiegi_geom = []
+    for segs in cs.allsegs:
+        polygons = []
+        for seg in segs:
+            if len(seg) >= 3:
+                poly = Polygon(seg)
                 if not poly.is_valid:
                     poly = shapely.make_valid(poly)
                 polygons.append(poly)
-
-    zasieg_geom = shapely.union_all(polygons).buffer(0) if polygons else Polygon()
+        zasiegi_geom.append(shapely.union_all(polygons).buffer(0) if polygons else Polygon())
 
     gdf_model.plot(ax=ax, color='gray', markersize=3, alpha=0.3)
-    gdf_model[mask_uszk].plot(ax=ax, color='red', markersize=8, alpha=0.7)
+    gdf_model[mask_uszk].plot(ax=ax, color='red', markersize=6, alpha=0.5)
     poland.boundary.plot(ax=ax, color='black', linewidth=1)
 
     try:
@@ -201,51 +249,73 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     ax.set_xlim(xmin - MARGIN, xmax + MARGIN)
     ax.set_ylim(ymin - MARGIN, ymax + MARGIN)
     ax.grid(True, linestyle='--', alpha=0.5, color='gray')
-    
+
     tytul_gatunek = f" | Gatunek: {gatunek}" if gatunek else ""
-    nasil_opis = prog_nasil_uszk if prog_nasil_uszk is not None else 0
-    ax.set_title(f"Ryzyko uszkodzeń (Lata: {okres}, próg nasil. > {nasil_opis}){tytul_gatunek}", fontsize=11)
+    zakresy_opis = ', '.join(
+        (f'{p:.0f}–{progi_nasilenia[i + 1]:.0f}' if i + 1 < len(progi_nasilenia) else f'>{p:.0f}')
+        for i, p in enumerate(progi_nasilenia)
+    )
+    ax.set_title(
+        f"Średnie nasilenie uszkodzeń drzewostanów — zakresy {zakresy_opis}% "
+        f"(Lata: {okres}, uszk. > {prog * 10}%){tytul_gatunek}",
+        fontsize=11,
+    )
     ax.set_xlabel("X [m] (EPSG:2180)")
     ax.set_ylabel("Y [m] (EPSG:2180)")
     ax.ticklabel_format(style='plain', useOffset=False)
-    
+
     try:
         cx.add_basemap(ax, crs=poland.crs, source=cx.providers.Esri.WorldGrayCanvas, alpha=1, zoom=8)
     except Exception:
         pass
 
+    # Etykiety legendy opisują PRZEDZIAŁY - contourf koloruje rozłączne pasma.
     legend_elements = [
-        mpatches.Patch(facecolor=kde_color, edgecolor='#8b0000', linewidth=1.5, alpha=0.6, label=f'Ryzyko wzg. ≥ {prog_ryzyka:.2f}×'),
-        mlines.Line2D([], [], color='red', marker='o', linestyle='None', markersize=6, alpha=0.7, label='Trakt uszkodzony'),
+        mpatches.Patch(
+            facecolor=kolory_pasm[i], edgecolor='#8b0000', linewidth=1.2, alpha=0.7,
+            label=(f'{progi_nasilenia[i]:.0f}–{progi_nasilenia[i + 1]:.0f}%'
+                   if i + 1 < len(progi_nasilenia) else f'> {progi_nasilenia[i]:.0f}%'),
+        )
+        for i in range(len(progi_nasilenia) - 1, -1, -1)
+    ] + [
+        mlines.Line2D([], [], color='red', marker='o', linestyle='None', markersize=6, alpha=0.5, label='Trakt uszkodzony'),
         mlines.Line2D([], [], color='gray', marker='o', linestyle='None', markersize=4, alpha=0.4, label='Trakt badany (tło)'),
         mlines.Line2D([], [], color='black', linewidth=1, label='Granica Polski'),
     ]
-    ax.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.01, 0.03), frameon=True, facecolor='white')
+    ax.legend(
+        handles=legend_elements, loc='center left', bbox_to_anchor=(1.01, 0.5),
+        frameon=True, facecolor='white', fontsize=9, title="Legenda", title_fontsize=10,
+    )
 
     # ==============================================================================
-    # 10. ZAPIS WYNIKÓW
+    # ZAPIS WYNIKÓW
     # ==============================================================================
     if not os.path.exists("KDE_uszkodzenia"):
         os.makedirs("KDE_uszkodzenia")
 
     gdf_zasieg = gpd.GeoDataFrame(
-        [{
-            'rok_start': rok_start,
-            'rok_end': rok_end,
-            'gatunek': gatunek if gatunek else 'Wszystkie',
-            'prog_nasilenia': prog_nasil_uszk if prog_nasil_uszk is not None else 0,
-            'percentyl': PERCENTYL_RYZYKA,
-            'prog_ryzyka': float(prog_ryzyka),
-            'liczba_traktow': len(gdf_model),
-        }],
-        geometry=[zasieg_geom],
+        [
+            {
+                'rok_start': rok_start,
+                'rok_end': rok_end,
+                'gatunek': gatunek if gatunek else 'Wszystkie',
+                'prog_nasilenia': prog,
+                'prog_sredniego_nasilenia_proc': p,
+                'zakres': f'nasilenie >= {p:.0f}%',
+                'srednia_krajowa_proc': float(wspolczynnik_korekty_skali),
+                'max_nasilenia_proc': max_nasilenia,
+                'liczba_traktow': len(gdf_model),
+                'geometry': geom,
+            }
+            for p, geom in zip(progi_nasilenia, zasiegi_geom)
+        ],
+        geometry='geometry',
         crs=CRS_OBLICZENIOWY,
     )
 
     sufix_gat = f"_{gatunek}" if gatunek else ""
     sufix_nasil = f"_nasil{prog_nasil_uszk}" if prog_nasil_uszk is not None else ""
-
-    file_prefix = f"ryzyko_{okres}{sufix_gat}{sufix_nasil}"
+    file_prefix = f"nasilenie_{okres}{sufix_gat}{sufix_nasil}"
 
     gdf_zasieg.to_crs(CRS_ZAPISU).to_file(
         f"KDE_uszkodzenia/{file_prefix}.geojson", driver="GeoJSON"

@@ -36,7 +36,10 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     trakty = gpd.read_file('data/trakty_wsp.geojson')
 
     if gatunek is not None:
-        df = df[df['GAT_PAN_PR'] == gatunek].copy()
+        # Podgatunki (DB.S, DB.B, ...) jak gatunek bazowy - to samo dopasowanie
+        # co Wisl_quert._dopasowanie_gatunku.
+        maska = (df['GAT_PAN_PR'] == gatunek) | df['GAT_PAN_PR'].fillna('').str.startswith(gatunek + '.')
+        df = df[maska].copy()
 
     if df.empty:
         print(f"Brak danych po odfiltrowaniu dla gatunku w latach {okres}.")
@@ -49,9 +52,10 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     else:
         df_uszk_filtr = df[df['NASIL_USZK'] > 0].copy()
 
-    # ZAŁOŻENIE DO ZWERYFIKOWANIA (ta sama waga co w kde_uszkodzenia.py):
-    # traktujemy NASIL_USZK jako wielkość liniową - jeśli to kod klasy
-    # porządkowej, a nie ilorazowej, mnożenie przez WSP_Z wymaga rewizji.
+    # NASIL_USZK to skala ciągła (3 = 30%, 5 = 50%; poniżej 30% drzewostan
+    # uznaje się za nieuszkodzony), więc iloczyn z WSP_Z jest uzasadniony.
+    # Skala (x10 do %) nie ma tu znaczenia - test sparr porównuje kształt
+    # dwóch gęstości, nie ich wartości bezwzględne.
     df_uszk_filtr['iloczyn_nasilenia'] = df_uszk_filtr['WSP_Z'] * df_uszk_filtr['NASIL_USZK']
     df_uszk_trakty = df_uszk_filtr.groupby('NR_TRAKTU').agg(waga_uszk=('iloczyn_nasilenia', 'sum')).reset_index()
 
@@ -203,4 +207,5 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
 if __name__ == "__main__":
     from Wisl_quert import CYKLE_LATA
     for rok_start, rok_end in CYKLE_LATA:
-        uszkodzenia(rok_start=rok_start, rok_end=rok_end, prog_nasil_uszk=3, gatunek='ŚW')
+        for gat in ['SO', 'ŚW', 'JD', 'MD', 'DB', 'BK', 'BRZ', 'OL']:
+            uszkodzenia(rok_start=rok_start, rok_end=rok_end, prog_nasil_uszk=3, gatunek=gat)

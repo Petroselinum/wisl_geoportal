@@ -168,9 +168,14 @@ def query_tlo_lasu(rok_start: int = None, rok_end: int = None):
     KODY_LAS_SQL = KODY_R_POW_LAS
     with Session(engine) as session:
         waga_tlo = cast(OBL_ADRES_POW.WSP_Z, Float)
+        # NR_CYKLU zwracany, bo NR_PODPOW NIE jest unikalny między cyklami
+        # (82% podpowierzchni powtarza się w kolejnych cyklach) - przy zakresie
+        # lat obejmującym kilka cykli jedyny poprawny klucz rekordu to para
+        # (NR_PODPOW, NR_CYKLU).
         return session.exec(
             select(
                 OBL_ADRES_POW.NR_PODPOW,
+                ADRES_POW.NR_CYKLU,
                 waga_tlo.label('waga_tlo'),
             )
             .join(ADRES_POW,
@@ -202,8 +207,12 @@ def query_mlode_uprawy(rok_start: int = None, rok_end: int = None):
         # zapytanie - stąd JOIN z ADRES_POW tutaj też (DRZEWA_OD_7 samo nie
         # ma kolumny DATA), mimo że wynik ma_drzewa nie jest bezpośrednio
         # zwracany.
+        # Złączenie ma_drzewa po PEŁNYM kluczu (NR_PODPOW, NR_CYKLU): przy
+        # zakresie lat obejmującym kilka cykli sam NR_PODPOW pomyliłby młodą
+        # uprawę z cyklu N z tą samą podpowierzchnią z cyklu N+1, gdzie drzewa
+        # >=7cm już urosły - i uprawa zniknęłaby z wyniku.
         ma_drzewa = (
-            select(DRZEWA_OD_7.NR_PODPOW)
+            select(DRZEWA_OD_7.NR_PODPOW, DRZEWA_OD_7.NR_CYKLU)
             .join(ADRES_POW,
                 (ADRES_POW.NR_PODPOW == DRZEWA_OD_7.NR_PODPOW) &
                 (ADRES_POW.NR_CYKLU == DRZEWA_OD_7.NR_CYKLU))
@@ -215,13 +224,16 @@ def query_mlode_uprawy(rok_start: int = None, rok_end: int = None):
         return session.exec(
             select(
                 ADRES_POW.NR_PODPOW,
+                ADRES_POW.NR_CYKLU,
                 ADRES_POW.GAT_PAN_PR,
                 waga_tlo.label('waga_tlo'),
             )
             .join(OBL_ADRES_POW,
                 (OBL_ADRES_POW.NR_PODPOW == ADRES_POW.NR_PODPOW) &
                 (OBL_ADRES_POW.NR_CYKLU == ADRES_POW.NR_CYKLU))
-            .outerjoin(ma_drzewa, ma_drzewa.c.NR_PODPOW == ADRES_POW.NR_PODPOW)
+            .outerjoin(ma_drzewa,
+                (ma_drzewa.c.NR_PODPOW == ADRES_POW.NR_PODPOW) &
+                (ma_drzewa.c.NR_CYKLU == ADRES_POW.NR_CYKLU))
             .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
                    ADRES_POW.R_POW_PR == 1,
                    ADRES_POW.WIEK_PAN_PR <= MAX_WIEK_MLODEJ_UPRAWY,
