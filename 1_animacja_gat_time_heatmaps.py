@@ -5,6 +5,7 @@ import os
 from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, engine
 from sqlmodel import Session, select, func, Integer
 from heatmap_data import heatmap_gatunki
+from Wisl_quert import STATUS_GRUNTU_MAX
 
 def query_udzial_gat(gatunek: str, rok_start: int, rok_end: int):
     # Nawiązanie połączenia z bazą WISL
@@ -63,7 +64,8 @@ def query_udzial_gat(gatunek: str, rok_start: int, rok_end: int):
             .where(DRZEWA_OD_7.GAT == gatunek,
                 func.substring(ADRES_POW.DATA, 1, 4).cast(Integer) >= rok_start,
                 func.substring(ADRES_POW.DATA, 1, 4).cast(Integer) <= rok_end,
-                DRZEWA_OD_7.WAR != 10)
+                DRZEWA_OD_7.WAR != 10,
+                ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX)
             .group_by(DRZEWA_OD_7.NR_PODPOW, 
                     DRZEWA_OD_7.NR_CYKLU,
                     pow_miazszosc.c.SUMA_MIAZSZOSC,

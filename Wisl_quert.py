@@ -20,6 +20,16 @@ KODY_R_POW_LAS = [1, 7, 8, 9, 10, 11, 12]
 # zrębami/haliznami z nieaktualnym, planistycznym opisem w GAT_PAN_PR.
 MAX_WIEK_MLODEJ_UPRAWY = 20
 
+# STATUS_GRUNTU (słownik SL_STATUS_GRUNTU) - jakość/wiarygodność opisu
+# powierzchni. Zachowujemy 1 (Lasy przeznaczone do produkcji leśnej),
+# 2 (Lasy z roślinnością o pokryciu >10% o innej funkcji niż produkcja
+# leśna) i 3 (Lasy bez roślinności drzewiastej lub z małym pokryciem).
+# Odrzucamy 4 (Grunty leśne poza ewidencją), 5 (Powierzchnia negatywnie
+# zweryfikowana) i 9 (Podpowierzchnia dopełniająca - techniczne uzupełnienie
+# geometrii, nie samodzielny pomiar) - te statusy nie są wiarygodnym lub
+# samodzielnym źródłem danych o drzewostanie.
+STATUS_GRUNTU_MAX = 3
+
 
 def _dopasowanie_gatunku(kolumna, gatunek):
     # Kody gatunków WISL rozróżniają podgatunki kropką (DB.S, DB.B, DB.C -
@@ -82,12 +92,20 @@ def query_udzial_gat(gatunek: str, nr_cykl: int = None):
             .join(pow_miazszosc,
                 (DRZEWA_OD_7.NR_PODPOW == pow_miazszosc.c.NR_PODPOW) &
                 (DRZEWA_OD_7.NR_CYKLU == pow_miazszosc.c.NR_CYKLU))
-            .join(OBL_ADRES_POW, 
+            .join(OBL_ADRES_POW,
                 (DRZEWA_OD_7.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
                 (DRZEWA_OD_7.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
+            # STATUS_GRUNTU jest wyłącznie w ADRES_POW (nie w OBL_ADRES_POW),
+            # stąd dodatkowy JOIN - konieczny dla spójności z query_tlo_lasu /
+            # query_mlode_uprawy, które ten warunek już mają: licznik i
+            # mianownik muszą operować na tym samym uniwersum podpowierzchni.
+            .join(ADRES_POW,
+                (DRZEWA_OD_7.NR_PODPOW == ADRES_POW.NR_PODPOW) &
+                (DRZEWA_OD_7.NR_CYKLU == ADRES_POW.NR_CYKLU))
             .where(_dopasowanie_gatunku(DRZEWA_OD_7.GAT, gatunek),
                 DRZEWA_OD_7.NR_CYKLU == nr_cykl,
-                DRZEWA_OD_7.WAR != 10)
+                DRZEWA_OD_7.WAR != 10,
+                ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX)
             .group_by(DRZEWA_OD_7.NR_PODPOW, 
                     DRZEWA_OD_7.NR_CYKLU,
                     pow_miazszosc.c.SUMA_MIAZSZOSC,
@@ -137,6 +155,7 @@ def query_tlo_lasu(nr_cykl: int = None):
                 (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
             .where(ADRES_POW.NR_CYKLU == nr_cykl,
                    ADRES_POW.R_POW_PR.in_(KODY_LAS_SQL),
+                   ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX,
                    waga_tlo > 0)
         ).all()
 
@@ -177,6 +196,7 @@ def query_mlode_uprawy(nr_cykl: int = None):
                    ADRES_POW.R_POW_PR == 1,
                    ADRES_POW.WIEK_PAN_PR <= MAX_WIEK_MLODEJ_UPRAWY,
                    ADRES_POW.GAT_PAN_PR.isnot(None),
+                   ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX,
                    waga_tlo > 0,
                    ma_drzewa.c.NR_PODPOW.is_(None))
         ).all()
@@ -196,7 +216,8 @@ def query_drzewostany_uszk(nr_cykl: int = None):
                 (ADRES_POW.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
                 (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU)) \
             .where(ADRES_POW.NR_CYKLU == nr_cykl,
-                   ADRES_POW.R_POW_PR == 1)
+                   ADRES_POW.R_POW_PR == 1,
+                   ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX)
         ).all()
     return powierzchnie_uszk
 
@@ -234,7 +255,8 @@ def martwe_drewno(nr_cykl: int = None):
                 (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
             .where(
                 OBL_ADRES_POW.NR_CYKLU == nr_cykl,
-                ADRES_POW.R_POW_PR.in_([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+                ADRES_POW.R_POW_PR.in_([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX
             )
             .group_by(NR_Traktu_z)
         ).cte('z_pow_les')
@@ -276,5 +298,6 @@ def query_all_wisl_plots(nr_cykl):
             SELECT * FROM "PUNKTY_TRAKTU" AS pk
             INNER JOIN "ADRES_POW" as ap on ap."NR_PUNKTU" = pk."NR_PUNKTU"
             WHERE ap."NR_CYKLU" = {nr_cykl}
+              AND ap."STATUS_GRUNTU" <= {STATUS_GRUNTU_MAX}
         ''')
         return session.execute(sql).all()
