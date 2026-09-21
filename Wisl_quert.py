@@ -244,6 +244,72 @@ def query_mlode_uprawy(rok_start: int = None, rok_end: int = None):
         ).all()
 
 
+def query_zasobnosc(rok_start: int = None, rok_end: int = None):
+    # ZASOBNOSC (OBL_ADRES_POW) to miąższość drzew ŻYWYCH na 1 ha danej
+    # podpowierzchni [m3/ha] - gotowa gęstość, w przeciwieństwie do martwego
+    # drewna, gdzie MIAZSZOSC jest surową objętością z koła próbnego i trzeba
+    # ją dopiero przeliczyć na hektar.
+    #
+    # Zwraca na TRAKT: średnią zasobność ważoną reprezentowaną powierzchnią
+    # (SR_ZASOBNOSC = sum(ZASOBNOSC*WSP_Z)/sum(WSP_Z)) oraz samą SUMA_WSP_Z,
+    # bo ta druga jest potrzebna osobno jako waga reprezentatywności przy
+    # przestrzennym wygładzaniu KDE.
+    #
+    # UNIWERSUM: tylko drzewostany (R_POW_PR=1), czyli grunty ZALESIONE -
+    # zgodnie z tym, jak zasobność raportuje BULiGL. Halizny, zręby i
+    # płazowiny (R_POW_PR 7-12) to grunty NIEZALESIONE i do zasobności nie
+    # wchodzą (w bazie mają zresztą ZASOBNOSC = NULL).
+    #
+    # OBSŁUGA NULL - dwa różne przypadki, których nie wolno mylić:
+    #  - NULL i BRAK drzew >=7cm (1795 podpow. w cyklu 4): młoda uprawa,
+    #    fizycznie zerowa miąższość drzew grubych - wchodzi jako 0 i
+    #    poprawnie obniża średnią;
+    #  - NULL MIMO obecności drzew >=7cm (848 podpow.): braku danych nie
+    #    wolno czytać jako zera, więc taka podpowierzchnia jest POMIJANA.
+    # Sprawdzone na danych: przy takim podziale średnia krajowa wynosi
+    # 262,4 / 279,5 / 291,7 / 302,2 m3/ha w kolejnych cyklach, wobec
+    # 263,2 / 276,5 / 291,1 / 292,9 raportowanych przez BULiGL (data.py).
+    # Potraktowanie wszystkich NULL jako braku danych dawało 312,8 m3/ha
+    # w cyklu 4, czyli wyraźnie powyżej wartości raportowanych.
+    with Session(engine) as session:
+        ma_drzewa = (
+            select(DRZEWA_OD_7.NR_PODPOW, DRZEWA_OD_7.NR_CYKLU)
+            .where(DRZEWA_OD_7.WAR != 10)
+            .distinct()
+        ).subquery()
+
+        wsp_z = cast(OBL_ADRES_POW.WSP_Z, Float)
+        zasobnosc = func.coalesce(cast(OBL_ADRES_POW.ZASOBNOSC, Float), 0.0)
+        NR_Traktu = (OBL_ADRES_POW.NR_PODPOW // literal_column('1000')).label('NR_Traktu')
+
+        return session.exec(
+            select(
+                NR_Traktu,
+                (func.sum(zasobnosc * wsp_z) / func.sum(wsp_z)).label('SR_ZASOBNOSC'),
+                func.sum(wsp_z).label('SUMA_WSP_Z'),
+            )
+            .join(ADRES_POW,
+                (ADRES_POW.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
+                (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
+            .outerjoin(ma_drzewa,
+                (ma_drzewa.c.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
+                (ma_drzewa.c.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
+            .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
+                   ADRES_POW.R_POW_PR == 1,
+                   ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX,
+                   wsp_z > 0,
+                   # pomijamy braki danych, ale zostawiamy zerowe uprawy
+                   or_(OBL_ADRES_POW.ZASOBNOSC.isnot(None),
+                       ma_drzewa.c.NR_PODPOW.is_(None)),
+                   # Ujemna miąższość to błąd danych (3 rekordy w bazie, min
+                   # -2,57 m3/ha). Bez tego trakt dostaje ujemną wagę i
+                   # gaussian_kde przerywa: "aweights cannot be negative".
+                   or_(OBL_ADRES_POW.ZASOBNOSC.is_(None),
+                       cast(OBL_ADRES_POW.ZASOBNOSC, Float) >= 0))
+            .group_by(NR_Traktu)
+        ).all()
+
+
 def query_drzewostany_uszk(rok_start: int = None, rok_end: int = None):
     with Session(engine) as session:
         powierzchnie_uszk = session.exec(
