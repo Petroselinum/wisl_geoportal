@@ -47,10 +47,11 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
 
     tlo = df.groupby('NR_TRAKTU').agg({'WSP_Z': 'sum'}).reset_index()
 
-    if prog_nasil_uszk is not None:
-        df_uszk_filtr = df[df['NASIL_USZK'] > prog_nasil_uszk].copy()
-    else:
-        df_uszk_filtr = df[df['NASIL_USZK'] > 0].copy()
+    # prog_nasil_uszk = minimalne nasilenie (klasa), od którego drzewostan
+    # liczy się jako uszkodzony: >= prog. None = każde zarejestrowane
+    # uszkodzenie (jak w kde_uszkodzenia.py).
+    prog = prog_nasil_uszk if prog_nasil_uszk is not None else 0
+    df_uszk_filtr = df[(df['NASIL_USZK'] > 0) & (df['NASIL_USZK'] >= prog)].copy()
 
     # NASIL_USZK to skala ciągła (3 = 30%, 5 = 50%; poniżej 30% drzewostan
     # uznaje się za nieuszkodzony), więc iloczyn z WSP_Z jest uzasadniony.
@@ -170,8 +171,9 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     ax.grid(True, linestyle='--', alpha=0.5, color='gray')
 
     tytul_gatunek = f" | Gatunek: {gatunek}" if gatunek else ""
-    nasil_opis = prog_nasil_uszk if prog_nasil_uszk is not None else 0
-    ax.set_title(f"Istotne ryzyko uszkodzeń p < 0.05 (Lata: {okres}, próg > {nasil_opis}){tytul_gatunek}", fontsize=11)
+    opis_progu = ("uszkodzenie ≥ 30%" if prog_nasil_uszk is None
+                  else f"nasilenie uszk. ≥ {prog_nasil_uszk * 10}%")
+    ax.set_title(f"Istotne ryzyko uszkodzeń p < 0.05 (Lata: {okres}, {opis_progu}){tytul_gatunek}", fontsize=11)
     # Wynik eksploracyjny: p<0.05 liczone niezależnie w każdym pikselu siatki,
     # bez korekty na wielokrotne testowanie (patrz policz_ryzyko.R) - to
     # akceptowane w literaturze ograniczenie metody tolerance contours
@@ -208,4 +210,4 @@ if __name__ == "__main__":
     from Wisl_quert import CYKLE_LATA
     for rok_start, rok_end in CYKLE_LATA:
         for gat in ['SO', 'ŚW', 'JD', 'MD', 'DB', 'BK', 'BRZ', 'OL']:
-            uszkodzenia(rok_start=rok_start, rok_end=rok_end, prog_nasil_uszk=3, gatunek=gat)
+            uszkodzenia(rok_start=rok_start, rok_end=rok_end, gatunek=gat)
