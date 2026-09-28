@@ -1,6 +1,6 @@
 from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, engine
 from sqlmodel import Session, select, func, cast, Float, Integer, literal_column, text
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, case
 import geopandas as gpd
 import math
 
@@ -38,6 +38,35 @@ STATUS_GRUNTU_MAX = 3
 # przyjmują rok_start/rok_end wprost i nie wymagają, żeby zakres pokrywał się
 # z którymkolwiek z tych cykli).
 CYKLE_LATA = [(2005, 2009), (2010, 2014), (2015, 2019), (2020, 2025)]
+
+# PRZYCZ_USZK (słownik SL_PRZYCZ_USZK, tabela ADRES_POW) - zarejestrowana
+# przyczyna uszkodzenia drzewostanu. Kod 10 = drzewostan NIEUSZKODZONY, nie
+# jest tu ujęty - ten słownik obejmuje wyłącznie faktyczne przyczyny, jako
+# wartości parametru przycz_uszk w kde_uszkodzenia.py / kde_uszkodzenia_sparr.py.
+PRZYCZYNY_USZK = {
+    11: "Opieńkowa zgnilizna korzeni",
+    12: "Huba korzeni",
+    13: "Owady, szkodniki pierwotne",
+    14: "Inne choroby infekcyjne",
+    15: "Wiatr",
+    16: "Pożar",
+    17: "Zwierzyna spałowanie",
+    18: "Zwierzyna zgryzanie",
+    19: "Zwierzyna inne",
+    20: "Górnictwo",
+    21: "Śnieg (okiść)",
+    22: "Inne",
+    23: "Zalanie",
+    24: "Bezpośrednie działanie człowieka",
+    25: "Zanieczyszczenia powietrza",
+    26: "Wiele czynników sprawczych",
+    27: "Owady, szkodniki wtórne",
+    28: "Inne owady",
+    29: "Konkurencja",
+    30: "Niezydentyfikowane",
+    31: "Obniżenie poziomu wód gruntowych",
+    32: "Jemioła",
+}
 
 
 def _filtr_lat(kolumna_data, rok_start, rok_end):
@@ -306,6 +335,106 @@ def query_zasobnosc(rok_start: int = None, rok_end: int = None):
                    # gaussian_kde przerywa: "aweights cannot be negative".
                    or_(OBL_ADRES_POW.ZASOBNOSC.is_(None),
                        cast(OBL_ADRES_POW.ZASOBNOSC, Float) >= 0))
+            .group_by(NR_Traktu)
+        ).all()
+
+
+def query_zasobnosc_gat(gatunek: str, rok_start: int = None, rok_end: int = None):
+    # Zasobność JEDNEGO gatunku [m3/ha] - odpowiednik query_zasobnosc, ale
+    # liczony od dołu, z miąższości pojedynczych drzew (OBL_DRZEWA_OD_7.
+    # MIAZSZOSC, objętość grubizny drzewa w m3). Na podpowierzchnię:
+    #   ZAS_GAT = SUMA(MIAZSZOSC drzew gatunku) / (WSP_Z * POW_KOLA_HA)
+    # czyli suma objętości / rzeczywiście reprezentowana powierzchnia koła.
+    #
+    # POWIERZCHNIA KOŁA NIE JEST STAŁA i nie ma jej w żadnej kolumnie bazy.
+    # Sprawdzone na danych (SUMA(MIAZSZOSC) / (ZASOBNOSC * WSP_Z)):
+    #  - cykle 3-4 (2015-2025): zawsze 400 m2 (r = 11,28 m), 100% podpow.;
+    #  - cykle 1-2 (2005-2014): 200 m2 w drzewostanach do ~60 lat, 400 m2
+    #    w starszych, część 500 m2, a na części powierzchni wartości pośrednie
+    #    (koła koncentryczne - grubsze drzewa mierzone na większym kole).
+    # Dlatego POW_KOLA_HA odtwarzamy z ZASOBNOSC samej bazy, która ma już
+    # uwzględnioną właściwą metodykę danego cyklu:
+    #   POW_KOLA_HA = SUMA(MIAZSZOSC wszystkich drzew) / (ZASOBNOSC * WSP_Z)
+    # Dzięki temu suma zasobności wszystkich gatunków na podpowierzchni daje
+    # dokładnie ZASOBNOSC, a średnie krajowe są spójne z query_zasobnosc.
+    #
+    # Uniwersum, filtry i obsługa NULL - identyczne jak w query_zasobnosc
+    # (drzewostany R_POW_PR=1; młode uprawy bez drzew >=7cm wchodzą jako 0;
+    # NULL ZASOBNOSC mimo obecności drzew = brak danych, pomijane). Podpow.
+    # bez danego gatunku wchodzą jako 0 - to one tworzą tło (mianownik).
+    # Przestoje (WAR=10) pominięte jak wszędzie - ZASOBNOSC w bazie też ich
+    # nie zawiera (sprawdzone: bez nich 400 m2 wychodzi na większej liczbie
+    # podpowierzchni).
+    #
+    # DRZEWA BEZ MIĄŻSZOŚCI (brak wiersza w OBL_DRZEWA_OD_7; cykl 4: ~120 tys.
+    # drzew, 11%) są POMIJANE - nie wchodzą do żadnej sumy. Tak samo liczy je
+    # sama baza: na podpowierzchniach z takimi drzewami ZASOBNOSC odpowiada
+    # dokładnie sumie miąższości POZOSTAŁYCH drzew na 400 m2 (sprawdzone,
+    # cykle 3-4: 100% / 99,96% podpow.), więc POW_KOLA_HA odtworzone z
+    # ZASOBNOSC jest poprawne i niczego nie "dolicza" za brakujące drzewa.
+    with Session(engine) as session:
+        miazszosc = cast(OBL_DRZEWA_OD_7.MIAZSZOSC, Float)
+        miazszosc_pow = (
+            select(
+                DRZEWA_OD_7.NR_PODPOW,
+                DRZEWA_OD_7.NR_CYKLU,
+                func.sum(miazszosc).label('SUMA_MIAZSZOSC'),
+                func.sum(case((_dopasowanie_gatunku(DRZEWA_OD_7.GAT, gatunek), miazszosc),
+                              else_=0.0)).label('SUMA_MIAZSZOSC_GAT'),
+            )
+            # LEFT JOIN: o tym, czy podpowierzchnia MA drzewa, decyduje
+            # DRZEWA_OD_7 (jak ma_drzewa w query_zasobnosc); drzewa bez
+            # miąższości dają NULL, który SUM pomija.
+            .outerjoin(OBL_DRZEWA_OD_7, DRZEWA_OD_7.ID == OBL_DRZEWA_OD_7.ID)
+            .where(DRZEWA_OD_7.WAR != 10)
+            .group_by(DRZEWA_OD_7.NR_PODPOW, DRZEWA_OD_7.NR_CYKLU)
+        ).subquery()
+
+        wsp_z = cast(OBL_ADRES_POW.WSP_Z, Float)
+        zasobnosc = cast(OBL_ADRES_POW.ZASOBNOSC, Float)
+        # Jawne cast(..., Float) po każdym dzieleniu: bez tego SQLAlchemy
+        # rzutuje mianownik nullif(...) na NUMERIC (w MSSQL domyślnie (18,0)),
+        # co obcina ułamek hektara do zera -> "Divide by zero".
+        pow_kola_ha = cast(
+            miazszosc_pow.c.SUMA_MIAZSZOSC / cast(func.nullif(zasobnosc * wsp_z, 0), Float),
+            Float)
+        # Brak gatunku albo brak drzew w ogóle (młoda uprawa) -> 0 m3/ha.
+        # ZASOBNOSC = 0 mimo drzew daje pow_kola_ha = NULL, więc i tu NULL,
+        # który SUM pomija - czyli podpowierzchnia liczy się jak 0.
+        zas_gat = case(
+            (miazszosc_pow.c.SUMA_MIAZSZOSC_GAT > 0,
+             miazszosc_pow.c.SUMA_MIAZSZOSC_GAT
+             / cast(func.nullif(wsp_z * pow_kola_ha, 0), Float)),
+            else_=0.0,
+        )
+        NR_Traktu = (OBL_ADRES_POW.NR_PODPOW // literal_column('1000')).label('NR_Traktu')
+
+        return session.exec(
+            select(
+                NR_Traktu,
+                (func.sum(zas_gat * wsp_z) / func.sum(wsp_z)).label('SR_ZASOBNOSC'),
+                func.sum(wsp_z).label('SUMA_WSP_Z'),
+            )
+            .join(ADRES_POW,
+                (ADRES_POW.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
+                (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
+            .outerjoin(miazszosc_pow,
+                (miazszosc_pow.c.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
+                (miazszosc_pow.c.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
+            .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
+                   ADRES_POW.R_POW_PR == 1,
+                   ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX,
+                   wsp_z > 0,
+                   # Zostawiamy zerowe uprawy (brak drzew >=7cm) oraz
+                   # podpowierzchnie ze znaną ZASOBNOSC i znanym składem
+                   # (SUMA_MIAZSZOSC > 0; ZASOBNOSC = 0 też jest poprawnym
+                   # zerem). Pomijamy braki danych: ZASOBNOSC NULL mimo drzew
+                   # (jak w query_zasobnosc) oraz ZASOBNOSC > 0 przy braku
+                   # miąższości wszystkich drzew (w bazie nie występuje).
+                   or_(miazszosc_pow.c.NR_PODPOW.is_(None),
+                       and_(OBL_ADRES_POW.ZASOBNOSC.isnot(None),
+                            or_(miazszosc_pow.c.SUMA_MIAZSZOSC > 0, zasobnosc == 0))),
+                   or_(OBL_ADRES_POW.ZASOBNOSC.is_(None), zasobnosc >= 0))
             .group_by(NR_Traktu)
         ).all()
 

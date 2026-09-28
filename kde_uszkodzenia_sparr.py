@@ -7,7 +7,7 @@ import pandas as pd
 import geopandas as gpd
 import contextily as cx
 
-from Wisl_quert import query_drzewostany_uszk
+from Wisl_quert import query_drzewostany_uszk, PRZYCZYNY_USZK
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
 
@@ -23,7 +23,8 @@ CRS_OBLICZENIOWY = "EPSG:2180"
 # ogóle nie jest generowana.
 MIN_TRAKTOW_WIARYGODNY = 100
 
-def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatunek: str = None):
+def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatunek: str = None,
+                 przycz_uszk: int = None):
     okres = f"{rok_start}-{rok_end}"
     res = query_drzewostany_uszk(rok_start=rok_start, rok_end=rok_end)
     if not res:
@@ -52,6 +53,12 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     # uszkodzenie (jak w kde_uszkodzenia.py).
     prog = prog_nasil_uszk if prog_nasil_uszk is not None else 0
     df_uszk_filtr = df[(df['NASIL_USZK'] > 0) & (df['NASIL_USZK'] >= prog)].copy()
+
+    # przycz_uszk zawęża licznik do jednej przyczyny uszkodzenia (PRZYCZ_USZK
+    # - słownik PRZYCZYNY_USZK w Wisl_quert.py); None = wszystkie przyczyny
+    # razem, niezależnie od filtra po nasileniu powyżej.
+    if przycz_uszk is not None:
+        df_uszk_filtr = df_uszk_filtr[df_uszk_filtr['PRZYCZ_USZK'] == przycz_uszk]
 
     # NASIL_USZK to skala ciągła (3 = 30%, 5 = 50%; poniżej 30% drzewostan
     # uznaje się za nieuszkodzony), więc iloczyn z WSP_Z jest uzasadniony.
@@ -111,7 +118,8 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
 
     sufix_gat = f"_{gatunek}" if gatunek else ""
     sufix_nasil = f"_nasil{prog_nasil_uszk}" if prog_nasil_uszk is not None else ""
-    file_prefix = f"ryzyko_{okres}{sufix_gat}{sufix_nasil}"
+    sufix_przycz = f"_przycz{przycz_uszk}" if przycz_uszk is not None else ""
+    file_prefix = f"ryzyko_{okres}{sufix_gat}{sufix_nasil}{sufix_przycz}"
 
     # ==============================================================================
     # 2. WYWOŁANIE SKRYPTU R
@@ -171,9 +179,11 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     ax.grid(True, linestyle='--', alpha=0.5, color='gray')
 
     tytul_gatunek = f" | Gatunek: {gatunek}" if gatunek else ""
+    tytul_przyczyna = (f" | Przyczyna: {PRZYCZYNY_USZK.get(przycz_uszk, przycz_uszk)}"
+                        if przycz_uszk is not None else "")
     opis_progu = ("uszkodzenie ≥ 30%" if prog_nasil_uszk is None
                   else f"nasilenie uszk. ≥ {prog_nasil_uszk * 10}%")
-    ax.set_title(f"Istotne ryzyko uszkodzeń p < 0.05 (Lata: {okres}, {opis_progu}){tytul_gatunek}", fontsize=11)
+    ax.set_title(f"Istotne ryzyko uszkodzeń p < 0.05 (Lata: {okres}, {opis_progu}){tytul_gatunek}{tytul_przyczyna}", fontsize=11)
     # Wynik eksploracyjny: p<0.05 liczone niezależnie w każdym pikselu siatki,
     # bez korekty na wielokrotne testowanie (patrz policz_ryzyko.R) - to
     # akceptowane w literaturze ograniczenie metody tolerance contours
@@ -207,7 +217,13 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     print(f"Zakończono pomyślnie. Wyniki z testem sparr zapisano dla lat {okres}.")
 
 if __name__ == "__main__":
+    '''
     from Wisl_quert import CYKLE_LATA
     for rok_start, rok_end in CYKLE_LATA:
-        for gat in ['SO', 'ŚW', 'JD', 'MD', 'DB', 'BK', 'BRZ', 'OL']:
-            uszkodzenia(rok_start=rok_start, rok_end=rok_end, gatunek=gat)
+        #for gat in ['SO', 'ŚW', 'JD', 'MD', 'DB', 'BK', 'BRZ', 'OL']:
+        uszkodzenia(rok_start=rok_start, rok_end=rok_end, gatunek=None)
+    '''
+    from Wisl_quert import CYKLE_LATA
+    for rok_start, rok_end in CYKLE_LATA:
+        for uszk in PRZYCZYNY_USZK.keys():
+            uszkodzenia(rok_start=rok_start, rok_end=rok_end, gatunek=None, przycz_uszk=uszk)

@@ -9,7 +9,7 @@ import geopandas as gpd
 import shapely
 from scipy.stats import gaussian_kde
 from shapely.geometry import Polygon
-from Wisl_quert import query_drzewostany_uszk
+from Wisl_quert import query_drzewostany_uszk, PRZYCZYNY_USZK
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
 from kde_common import (
@@ -51,6 +51,13 @@ CRS_ZAPISU = "EPSG:4326"
 # uszkodzeniem; prog_nasil_uszk=k zawęża to do nasilenia >= k*10% (drzewostany
 # o niższym nasileniu liczą się wtedy jako nieuszkodzone).
 #
+# PRZYCZ_USZK: zarejestrowana przyczyna uszkodzenia (10 = brak uszkodzenia,
+# 11-32 = konkretne przyczyny - słownik PRZYCZYNY_USZK w Wisl_quert.py, ten
+# sam co w 1_portal_mapowy_wisl.py). Parametr przycz_uszk zawęża licznik do
+# JEDNEJ przyczyny; domyślnie (None) liczą się wszystkie przyczyny razem -
+# to niezależny wymiar filtrowania od prog_nasil_uszk (nasilenie), oba można
+# łączyć.
+#
 # Wcześniejsza wersja zaznaczała 95. percentyl ilorazu f/g. Percentyl to
 # wielkość WZGLĘDNA: mapa zawsze pokazywała 5% siatki, niezależnie od tego, czy
 # uszkodzeń było dużo, czy mało - a udział uszkodzonych zmienia się między
@@ -83,7 +90,7 @@ KOLORY_PROGOW_PROC = {
 
 
 def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatunek: str = None,
-                progi: list[float] = PROGI_UDZIALU_PROC):
+                przycz_uszk: int = None, progi: list[float] = PROGI_UDZIALU_PROC):
     okres = f"{rok_start}-{rok_end}"
     res = query_drzewostany_uszk(rok_start=rok_start, rok_end=rok_end)
     if not res:
@@ -113,6 +120,12 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     # traktowane jako nieuszkodzone.
     prog = prog_nasil_uszk if prog_nasil_uszk is not None else 0
     df_uszk_filtr = df[(df['NASIL_USZK'] > 0) & (df['NASIL_USZK'] >= prog)].copy()
+
+    # przycz_uszk zawęża licznik do jednej przyczyny uszkodzenia (PRZYCZ_USZK
+    # - słownik PRZYCZYNY_USZK); None = wszystkie przyczyny razem (bez zmian
+    # względem powyższego filtra po nasileniu).
+    if przycz_uszk is not None:
+        df_uszk_filtr = df_uszk_filtr[df_uszk_filtr['PRZYCZ_USZK'] == przycz_uszk]
 
     # Licznik: reprezentowana powierzchnia drzewostanów uszkodzonych.
     df_uszk_trakty = df_uszk_filtr.groupby('NR_TRAKTU').agg(
@@ -342,6 +355,8 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     ax.grid(True, linestyle='--', alpha=0.5, color='gray')
 
     tytul_gatunek = f" | Gatunek: {gatunek}" if gatunek else ""
+    tytul_przyczyna = (f" | Przyczyna: {PRZYCZYNY_USZK.get(przycz_uszk, przycz_uszk)}"
+                        if przycz_uszk is not None else "")
     zakresy_opis = ', '.join(
         (f'{p:.0f}–{progi_udzialu[i + 1]:.0f}' if i + 1 < len(progi_udzialu) else f'>{p:.0f}')
         for i, p in enumerate(progi_udzialu)
@@ -350,7 +365,7 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
                   else f"nasilenie uszk. ≥ {prog * 10}%")
     ax.set_title(
         f"Udział powierzchni drzewostanów uszkodzonych — zakresy {zakresy_opis}% "
-        f"(Lata: {okres}, {opis_progu}){tytul_gatunek}",
+        f"(Lata: {okres}, {opis_progu}){tytul_gatunek}{tytul_przyczyna}",
         fontsize=11,
     )
     ax.set_xlabel("X [m] (EPSG:2180)")
@@ -393,6 +408,7 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
                 'rok_end': rok_end,
                 'gatunek': gatunek if gatunek else 'Wszystkie',
                 'prog_nasilenia': prog,
+                'przyczyna_uszk': PRZYCZYNY_USZK.get(przycz_uszk, 'Wszystkie') if przycz_uszk is not None else 'Wszystkie',
                 'prog_udzialu_proc': p,
                 'zakres': f'udzial >= {p:.0f}%',
                 'udzial_krajowy_proc': float(udzial_krajowy_proc),
@@ -408,7 +424,8 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
 
     sufix_gat = f"_{gatunek}" if gatunek else ""
     sufix_nasil = f"_nasil{prog_nasil_uszk}" if prog_nasil_uszk is not None else ""
-    file_prefix = f"udzial_uszkodzonych_{okres}{sufix_gat}{sufix_nasil}"
+    sufix_przycz = f"_przycz{przycz_uszk}" if przycz_uszk is not None else ""
+    file_prefix = f"udzial_uszkodzonych_{okres}{sufix_gat}{sufix_nasil}{sufix_przycz}"
 
     gdf_zasieg.to_crs(CRS_ZAPISU).to_file(
         f"KDE_uszkodzenia/{file_prefix}.geojson", driver="GeoJSON"
@@ -419,6 +436,13 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
 
 
 if __name__ == "__main__":
+    """
     from Wisl_quert import CYKLE_LATA
     for rok_start, rok_end in CYKLE_LATA:
-        uszkodzenia(rok_start=rok_start, rok_end=rok_end, gatunek=None)
+        uszkodzenia(rok_start=rok_start, rok_end=rok_end, gatunek=None)"""
+
+    
+    from Wisl_quert import CYKLE_LATA
+    for rok_start, rok_end in CYKLE_LATA:
+        for uszk in PRZYCZYNY_USZK.keys():
+            uszkodzenia(rok_start=rok_start, rok_end=rok_end, gatunek=None, przycz_uszk=uszk)

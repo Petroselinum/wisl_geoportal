@@ -9,7 +9,7 @@ import geopandas as gpd
 import shapely
 from scipy.stats import gaussian_kde
 from shapely.geometry import Polygon
-from Wisl_quert import query_zasobnosc
+from Wisl_quert import query_zasobnosc, query_zasobnosc_gat
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
 from kde_common import (
@@ -62,6 +62,18 @@ CRS_ZAPISU = "EPSG:4326"
 # opisu taksacyjnego (patrz query_zasobnosc) - są pomijane jako brak danych,
 # co lekko zawyża średnią. Potraktowanie ich jako zera dałoby 295,7 m3/ha,
 # ale byłoby nieprawdą, bo te podpowierzchnie mają zmierzone drzewa.
+#
+# ==============================================================================
+# ZASOBNOŚĆ POJEDYNCZEGO GATUNKU (parametr gatunek)
+# ==============================================================================
+# Ten sam estymator, ale SR_ZASOBNOSC pochodzi z Wisl_quert.query_zasobnosc_gat:
+# suma miąższości drzew gatunku (OBL_DRZEWA_OD_7.MIAZSZOSC) przeliczona przez
+# WSP_Z i powierzchnię koła pomiarowego. Wynik to m3/ha GATUNKU na hektar
+# WSZYSTKICH drzewostanów (nie tylko tych, w których gatunek występuje) -
+# podpowierzchnie bez gatunku wchodzą jako 0, więc zasobności wszystkich
+# gatunków sumują się do zasobności ogółem. Średnie krajowe (2005-2009 ->
+# 2020-2025): SO 151,6 -> 169,1 | DB 19,1 -> 25,5 | BK 17,7 -> 21,8 |
+# JD 9,1 -> 14,3 m3/ha.
 
 PROG_MIN_TLA = 0.01           # poniżej tego ułamka maksimum gęstości tła nie ufamy ilorazowi (brzegi)
 MIN_TRAKTOW_WIARYGODNY = 100  # globalny próg wiarygodności modelu (ten sam co w pozostałych skryptach KDE)
@@ -83,9 +95,23 @@ KOLORY_PROGOW_M3HA = {
     400: plt.cm.YlGn(0.92),
 }
 
+# Progi dla zasobności POJEDYNCZEGO gatunku - wspólne dla wszystkich gatunków,
+# żeby mapy różnych gatunków (nie tylko okresów) były porównywalne. Zakres
+# od 25 m3/ha (gatunki domieszkowe, np. jodła w Karpatach) do 200 m3/ha
+# (sosna na Niżu, średnio 150-170 m3/ha).
+PROGI_ZASOBNOSCI_GAT_M3HA = [25, 50, 100, 150, 200]
+
+KOLORY_PROGOW_GAT_M3HA = {
+    25: plt.cm.YlGn(0.25),
+    50: plt.cm.YlGn(0.40),
+    100: plt.cm.YlGn(0.55),
+    150: plt.cm.YlGn(0.72),
+    200: plt.cm.YlGn(0.92),
+}
+
 
 def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
-                   progi: list[float] = PROGI_ZASOBNOSCI_M3HA):
+                   progi: list[float] = None, gatunek: str = None):
     """
     Lokalna, wygładzona przestrzennie średnia zasobność drzewostanów (m3/ha),
     z zaznaczeniem obszarów przekraczających stałe progi.
@@ -94,12 +120,24 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
         numer formalnego cyklu WISL (patrz Wisl_quert.CYKLE_LATA).
 
     progi: lista stałych progów zasobności (m3/ha). Progi poza zakresem danych
-        okresu (>= max) są automatycznie pomijane.
+        okresu (>= max) są automatycznie pomijane. Domyślnie
+        PROGI_ZASOBNOSCI_M3HA (ogółem) albo PROGI_ZASOBNOSCI_GAT_M3HA (gatunek).
+
+    gatunek: kod gatunku WISL (np. 'SO', 'DB' - podgatunki DB.* wliczane).
+        None = zasobność wszystkich gatunków łącznie.
     """
+    if progi is None:
+        progi = PROGI_ZASOBNOSCI_GAT_M3HA if gatunek else PROGI_ZASOBNOSCI_M3HA
+    kolory_progow = KOLORY_PROGOW_GAT_M3HA if gatunek else KOLORY_PROGOW_M3HA
+    opis = f"gatunek {gatunek}" if gatunek else "ogółem"
+
     okres = f"{rok_start}-{rok_end}"
-    res = query_zasobnosc(rok_start=rok_start, rok_end=rok_end)
+    if gatunek:
+        res = query_zasobnosc_gat(gatunek, rok_start=rok_start, rok_end=rok_end)
+    else:
+        res = query_zasobnosc(rok_start=rok_start, rok_end=rok_end)
     if not res:
-        print(f"Brak danych z bazy dla lat {okres}.")
+        print(f"Brak danych z bazy dla lat {okres} ({opis}).")
         return
 
     df = pd.DataFrame(res, columns=['NR_TRAKTU', 'SR_ZASOBNOSC', 'SUMA_WSP_Z'])
@@ -177,7 +215,7 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
     wartosci_valid = zasobnosc[~np.isnan(zasobnosc)]
 
     if wartosci_valid.size == 0:
-        print(f"Brak poprawnych wartości zasobności dla lat {okres}.")
+        print(f"Brak poprawnych wartości zasobności dla lat {okres} ({opis}).")
         return
 
     max_zasobnosci = float(np.nanmax(wartosci_valid))
@@ -187,13 +225,13 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
 
     if not progi_zasobnosci:
         print(
-            f"Lata {okres}: zasobność nie przekracza żadnego z progów {sorted(set(progi))} "
+            f"Lata {okres} ({opis}): zasobność nie przekracza żadnego z progów {sorted(set(progi))} "
             f"m3/ha (max={max_zasobnosci:.1f} m3/ha) - pomijam mapę."
         )
         return
 
     print(
-        f"Zasobność | Lata: {okres} | n_traktow={len(gdf_model)} | "
+        f"Zasobność {opis} | Lata: {okres} | n_traktow={len(gdf_model)} | "
         f"srednia krajowa={srednia_krajowa:.1f} m3/ha | "
         + " | ".join(f"> {p:.0f}" for p in progi_zasobnosci)
         + f" | max lokalny={max_zasobnosci:.1f} m3/ha"
@@ -205,7 +243,7 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.set_aspect('equal')
 
-    kolory_pasm = [KOLORY_PROGOW_M3HA[p] for p in progi_zasobnosci]
+    kolory_pasm = [kolory_progow[p] for p in progi_zasobnosci]
 
     ax.contourf(
         X, Y, zasobnosc,
@@ -312,8 +350,9 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
          if i + 1 < len(progi_zasobnosci) else f'>{p:.0f}')
         for i, p in enumerate(progi_zasobnosci)
     )
+    tytul = f"Zasobność gatunku {gatunek}" if gatunek else "Zasobność drzewostanów"
     ax.set_title(
-        f"Zasobność drzewostanów — zakresy {zakresy_opis} m³/ha (Lata: {okres})",
+        f"{tytul} — zakresy {zakresy_opis} m³/ha (Lata: {okres})",
         fontsize=11,
     )
     ax.set_xlabel("X [m] (EPSG:2180)")
@@ -356,6 +395,7 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
             {
                 'rok_start': rok_start,
                 'rok_end': rok_end,
+                'gatunek': gatunek,
                 'prog_zasobnosci_m3ha': p,
                 'zakres': f'zasobnosc >= {p:.0f} m3/ha',
                 'srednia_krajowa_m3ha': float(srednia_krajowa),
@@ -370,17 +410,20 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
     )
 
     sufiks_prog = "_".join(str(int(p)) for p in progi_zasobnosci)
-    file_prefix = f"zasobnosc_{okres}_prog{sufiks_prog}"
+    sufiks_gat = f"_{gatunek}" if gatunek else ""
+    file_prefix = f"zasobnosc{sufiks_gat}_{okres}_prog{sufiks_prog}"
 
     gdf_zasieg.to_crs(CRS_ZAPISU).to_file(
         f"KDE_zasobnosc/{file_prefix}.geojson", driver="GeoJSON"
     )
     fig.savefig(f"KDE_zasobnosc/{file_prefix}.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print(f"Zakończono pomyślnie. Zapisano wyniki dla lat {okres}.")
+    print(f"Zakończono pomyślnie. Zapisano wyniki dla lat {okres} ({opis}).")
 
 
 if __name__ == "__main__":
     from Wisl_quert import CYKLE_LATA
-    for rok_start, rok_end in CYKLE_LATA:
-        zasobnosc_mapa(rok_start=rok_start, rok_end=rok_end)
+    gatunki = [None, 'SO', 'ŚW', 'JD', 'MD', 'DB', 'BK', 'BRZ', 'OL']
+    for gat in gatunki:
+        for rok_start, rok_end in CYKLE_LATA:
+            zasobnosc_mapa(rok_start=rok_start, rok_end=rok_end, gatunek=gat)
