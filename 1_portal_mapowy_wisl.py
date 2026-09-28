@@ -1,41 +1,50 @@
-from genericpath import exists
 import folium
-from folium.plugins import HeatMap, GroupedLayerControl, MiniMap, Search
+from folium.plugins import GroupedLayerControl, MiniMap, Search
 from folium import Element
-import os
-from opacity import calculate_min_opacity_log
-from Wisl_quert import query_udzial_gat, query_drzewostany_uszk, martwe_drewno
-from heatmap_data import heatmap_gatunki, heatmap_uszkodzenia, heatmap_uszkodzenia_typy, heatmap_martwe_drewno
 from data import wisl_rdlp_info
 import geopandas as gpd
 import pandas as pd
+import shapely
 from branca.colormap import linear
 import altair as alt
 from data import zasob_time_rdlp
 from pathlib import Path
+from portal_kde import dodaj_panel_kde
 
-#Aplikację należy uruchamiać na lokalnym serverze: python -m http.server 8000
-# http://localhost:8000/heatmap_gatunki.html
+#Aplikację należy uruchamiać na lokalnym serverze (z katalogu projektu):
+# python -m http.server 8000
+# http://localhost:8000/wygerenowane_animacje/aplikacja_mapowa.html
+#
+# Warstwy analityczne pochodzą z plików GeoJSON zapisanych przez skrypty
+# kde_*.py (KDE_gatunki, KDE_zasobnosc, KDE_martwe_drewno, KDE_uszkodzenia,
+# KDE_uszkodzenia_ryzyko) - przed zbudowaniem portalu trzeba je przeliczyć.
+# Wybiera się je w panelu "Analizy KDE" (portal_kde.py), nie w LayerControl.
 
 cykl = 4
 max_zoom = 9
+output_dir = Path('wygerenowane_animacje')
 
-slownik_gatunkow = {
-    'SO': 'sosna zwyczajna',
-    'ŚW': 'świerk pospolity',
-    'JD': 'jodła pospolita',
-    'MD': 'modrzew europejski',
-    'DB': 'dąb',
-    'BK': 'buk zwyczajny',
-    'GB': 'grab pospolity',
-    'BRZ': 'brzoza',
-    'OL': 'olcha czarna',
-    'JS': 'jesion wyniosły',
-    'LP': 'lipa drobnolistna',
-    'JW': 'klon jawor',
-    'CZR': 'czereśnia'}
+# Uproszczenie warstw wektorowych osadzanych w HTML. rdlp.geojson trafia do
+# HTML 7 razy (opis, 5 kartogramów, wykresy), a krainy.geojson ma pełną
+# szczegółowość - razem ~35 MB z ~42 MB pliku. 200 m to ~1 piksel przy
+# max_zoom 9 (~190 m/piksel), więc różnica jest niewidoczna.
+TOLERANCJA_WARSTW_M = 200
 
-gatunek = ['SO','ŚW','JD','MD','DB','BK','GB','BRZ','OL','JS','LP','JW']
+
+def uprosc_warstwe(gdf, tolerancja_m=TOLERANCJA_WARSTW_M):
+    """
+    Upraszcza warstwę poligonów stykających się ze sobą (RDLP, krainy).
+    coverage_simplify upraszcza wspólną granicę sąsiadów identycznie po obu
+    stronach, więc nie powstają szczeliny ani nakładki (zwykłe simplify
+    upraszcza każdy poligon osobno). Współrzędne zaokrąglane do 4 miejsc
+    (~10 m) - pełna precyzja zajmowała ponad połowę objętości.
+    """
+    g = gdf.to_crs(2180)
+    g['geometry'] = shapely.coverage_simplify(g.geometry.values, tolerancja_m)
+    g = g.to_crs(4326)
+    g['geometry'] = shapely.set_precision(g.geometry.values, 1e-4)
+    return g
+
 
 # Mapa
 min_lat=45.4
@@ -144,8 +153,8 @@ popup = folium.GeoJsonPopup(fields=fields,
                             labels=True
                             )
 
-rdlp = gpd.read_file('data/rdlp.geojson')
-rdlp = rdlp.rename(columns={'NAZWA': 'RDLP'})
+rdlp_granice = uprosc_warstwe(gpd.read_file('data/rdlp.geojson'))
+rdlp = rdlp_granice.rename(columns={'NAZWA': 'RDLP'})
 
 rdlp_info = pd.DataFrame(wisl_rdlp_info(cykl))
 
@@ -175,7 +184,7 @@ rdlp_layer.add_to(m)
 
 #Krainy
 
-krainy = gpd.read_file('data/krainy.geojson')
+krainy = uprosc_warstwe(gpd.read_file('data/krainy.geojson'))
 
 popup = folium.GeoJsonPopup(fields=['Kraina','Nazwa'],
                             localize=True,
@@ -286,7 +295,7 @@ for col, name in zip(fields[1:], names):
 # Wykresy
 
 df = zasob_time_rdlp()
-gdf = gpd.read_file('data/rdlp.geojson')
+gdf = rdlp_granice
 gdf_unique = gdf.drop_duplicates('NAZWA')
 
 def make_chart(rdlp_name, df):
@@ -325,180 +334,10 @@ for _, row in gdf_unique.iterrows():
 fg_zasobnosc.add_to(m)
 
 #################################################
-# Heatmapa z wagami
+# Warstwy KDE (panel Temat / Wariant / Okres)
 #################################################
-def col_gat(drzewostany = True):
-    collection = []
+dodaj_panel_kde(m, output_dir)
 
-    for gat in gatunek:
-        udzal_gat = query_udzial_gat(gat, cykl)
-        heat_data = heatmap_gatunki(udzal_gat, cykl=cykl, drzewostany=drzewostany)
-
-        if not heat_data:
-            continue
-
-        fg = folium.FeatureGroup(name=slownik_gatunkow[gat], show=False)
-
-        HeatMap(
-            heat_data,
-            min_opacity=calculate_min_opacity_log(len(heat_data), min_val=0.4, max_val=0.9),
-            radius=15,
-            blur=20,
-            gradient={
-                0.0: 'blue',
-                0.5: 'lime',
-                0.7: 'yellow',
-                1.0: 'red'
-            }
-        ).add_to(fg)
-        fg.add_to(m)
-        collection.append(fg)
-
-    return collection
-
-
-drzewostany_collection = col_gat(drzewostany=True)
-gatunek_collection = col_gat(drzewostany=False)
-
-
-legend_html = '''
-<div style="position: fixed; 
-            bottom: 50px; left: 10px; width: 150px; 
-            background-color: white; border:2px solid grey; z-index:9999; 
-            font-size:14px; padding: 15px; border-radius: 8px;
-            box-shadow: 3px 3px 10px rgba(0,0,0,0.4);">
-    <p style="margin: 5px 0; font-weight: bold;">Koncentracja:</p>
-    <div style="background: linear-gradient(to right, 
-                blue 0%, lime 50%, yellow 70%, red 100%); 
-                height: 25px; width: 100%; border: 1px solid #999; 
-                border-radius: 3px;"></div>
-    <div style="display: flex; justify-content: space-between; 
-                font-size: 11px; margin-top: 5px; color: #555;">
-        <span>niska</span>
-        <span style="text-align: right;">wysoka</span>
-    </div>
-</div>
-'''
-
-uszk_collection = []
-
-uszk = query_drzewostany_uszk(cykl, nasil_uszk=6)
-
-for gat in [''] + gatunek:
-    heat_data_uszk = heatmap_uszkodzenia(uszk, gatunek=gat)
-
-    if not heat_data_uszk:
-        continue
-
-    if gat == '':
-        fg_uszk = folium.FeatureGroup(name='wszystkie', show=False)
-    else:
-        fg_uszk = folium.FeatureGroup(name=slownik_gatunkow[gat], show=False)
-
-    HeatMap(
-    heat_data_uszk,
-    min_opacity=calculate_min_opacity_log(len(heat_data_uszk), min_val=0.4, max_val=0.9),
-    radius=15,
-    name='Mapa cieplna drzewostanów uszkodzonych',
-    blur=20,
-        gradient={
-            0.0: 'blue',
-            0.5: 'lime',
-            0.7: 'yellow',
-            1.0: 'red'
-        }
-    ).add_to(fg_uszk)
-    fg_uszk.add_to(m)
-    uszk_collection.append(fg_uszk)
-
-
-uszkodzenia = {
-    11: "Opieńkowa zgnilizna korzeni",
-    12: "Huba korzeni",
-    13: "Owady, szkodniki pierwotne",
-    14: "Inne choroby infekcyjne",
-    15: "Wiatr",
-    16: "Pożar",
-    17: "Zwierzyna spałowanie",
-    18: "Zwierzyna zgryzanie",
-19: "Zwierzyna inne",
-20: "Górnictwo",
-21: "Śnieg (okiść)",
-22: "Inne",
-23: "Zalanie",
-24: "Bezpośrednie działanie człowieka",
-25: "Zanieczyszczenia powietrza",
-26: "Wiele czynników sprawczych",
-27: "Owady, szkodniki wtórne",
-28: "Inne owady",
-29: "Konkurencja",
-30: "Niezydentyfikowane",
-31: "Obniżenie poziomu wód gruntowych",
-32: "Jemioła"}
-
-uszk_collection_typ = []
-
-uszkodz = query_drzewostany_uszk(cykl, nasil_uszk=5)
-
-for uszk in uszkodzenia.keys():
-    heat_data_uszk = heatmap_uszkodzenia_typy(uszkodz, typ=uszk)
-
-    if not heat_data_uszk:
-        continue
-
-    fg_uszk = folium.FeatureGroup(name=uszkodzenia[uszk], show=False)
-
-    HeatMap(
-    heat_data_uszk,
-    min_opacity=calculate_min_opacity_log(len(heat_data_uszk), min_val=0.4, max_val=0.9),
-    radius=15,
-    name='Mapa cieplna drzewostanów uszkodzonych',
-    blur=20,
-        gradient={
-            0.0: 'blue',
-            0.5: 'lime',
-            0.7: 'yellow',
-            1.0: 'red'
-        }
-    ).add_to(fg_uszk)
-    fg_uszk.add_to(m)
-    uszk_collection_typ.append(fg_uszk)
-
-# Martwe drewno
-martwe = {'Wszystkie': 0,
-          'Leżące': [1, 2, 3],
-          'Posusz': 4,
-          'Złomy': 5}
-
-wisl_mar= martwe_drewno(cykl)
-martwe_collection = []
-
-for key, val in martwe.items():
-    heat_data_mar = heatmap_martwe_drewno(wisl_mar, typ=val)
-
-    if not heat_data_mar:
-        continue
-
-    fg_mar = folium.FeatureGroup(name=key, show=False)
-
-    HeatMap(
-    heat_data_mar,
-    min_opacity=calculate_min_opacity_log(len(heat_data_mar), min_val=0.4, max_val=0.9),
-    radius=15,
-    name='Mapa cieplna martwego drewna',
-    blur=20,
-        gradient={
-            0.0: 'blue',
-            0.5: 'lime',
-            0.7: 'yellow',
-            1.0: 'red'
-        }
-    ).add_to(fg_mar)
-    fg_mar.add_to(m)
-    martwe_collection.append(fg_mar)
-
-
-m.get_root().html.add_child(folium.Element(legend_html))
 m.add_child(folium.LatLngPopup())
 
 #Wyszukiwarka miejscowości
@@ -527,12 +366,7 @@ folium.LayerControl(collapsed=False).add_to(m)
 GroupedLayerControl(
     groups={'Wyłącz wyświetlanie': granica_collection,
             'RDLP - choropleth': choro_collection,
-            'RDLP - Wykresy': [fg_zasobnosc],
-            'Zasięgi drzewostanów:': drzewostany_collection,
-            'Zasięgi gatunków:': gatunek_collection,
-            'Zasięgi drzewostanów uszkodzonych:': uszk_collection,
-            'Zasięgi wg typów uszkodzeń:': uszk_collection_typ,
-            'Martwe drewno': martwe_collection},
+            'RDLP - Wykresy': [fg_zasobnosc]},
     collapsed=False,
     exclusive_groups=False
 ).add_to(m)
@@ -732,10 +566,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
 m.get_root().html.add_child(folium.Element(scrol))
 
-if exists("wygerenowane_animacje") == False:
-    os.mkdir("wygerenowane_animacje")
-
-output_dir = Path('wygerenowane_animacje')
 output_dir.mkdir(parents=True, exist_ok=True)
 file_path = output_dir / 'aplikacja_mapowa.html'
 m.save(file_path)
