@@ -1,15 +1,17 @@
 """
 Panele portalu mapowego (1_portal_mapowy_wisl.py) w prawym górnym rogu:
 
-- "Warstwy" (PanelWarstw): podkład, granice oraz wyniki WISL w PGL LP wg
-  RDLP - kartogram wybranego wskaźnika z przełączaniem cykli WISL;
+- "Warstwy" (PanelWarstw): podkład, granice oraz sekcja "Wyniki WISL" -
+  kartogram wskaźnika z przełączaniem podziału (RDLP - lasy w zarządzie
+  PGL LP / województwa / krainy przyrodniczo-leśne - lasy wszystkich form
+  własności) i cykli WISL;
 - "Analizy KDE" (portal_kde.PanelKDE) - pod nim, w tym samym stylu.
 
 Wspólny wygląd paneli: StylPaneli (dodawany raz, przez dodaj_styl_paneli).
 
-Kartogram RDLP jest rysowany w przeglądarce z JEDNEJ warstwy granic RDLP
-i tabeli wyników (data.WISL_RDLP) - wcześniej każdy wskaźnik był osobną
-kopią rdlp.geojson w HTML, a przy 4 cyklach byłoby ich 20.
+Kartogramy są rysowane w przeglądarce z JEDNEJ warstwy granic danego typu
+jednostek i tabeli wyników - wcześniej każdy wskaźnik RDLP był osobną kopią
+rdlp.geojson w HTML.
 
 Kliknięcie RDLP, krainy przyrodniczo-leśnej albo województwa otwiera popup
 z wynikami WISL (cykl do wyboru w popupie) i wykresem zasobności w kolejnych
@@ -18,8 +20,8 @@ krainy i województwa - lasy wszystkich form własności (data.WISL_KRAINY,
 data.WISL_WOJEWODZTWA).
 
 Klasy kolorów każdego wskaźnika są WSPÓLNE dla wszystkich cykli (zakres
-z wartości wszystkich cykli), żeby zmiana koloru RDLP między cyklami
-oznaczała zmianę wartości - ta sama zasada co stałe progi w skryptach kde_*.
+z wartości wszystkich cykli, osobno dla każdego typu jednostek), żeby zmiana
+koloru między cyklami oznaczała zmianę wartości - ta sama zasada co stałe progi w skryptach kde_*.
 """
 import json
 import math
@@ -30,24 +32,31 @@ from jinja2 import Template
 from matplotlib import colormaps
 from matplotlib.colors import to_hex
 
-import pandas as pd
-
 from data import (RDLP, WISL_RDLP, zasob_time_rdlp,
                   KRAINY, WISL_KRAINY, ZASOBNOSC_OKNA_KRAINY,
-                  WOJEWODZTWA, WISL_WOJEWODZTWA, ZASOBNOSC_OKNA_WOJEWODZTWA)
+                  WOJEWODZTWA, WISL_WOJEWODZTWA, ZASOBNOSC_OKNA_WOJEWODZTWA,
+                  MARTWE_OKNA, PRZYROST_OKNA, UZYTKOWANIE_OKNA)
 
-# Wskaźniki kartogramu RDLP; klucze jak w data.WISL_RDLP
-WSKAZNIKI_RDLP = [
+# Wskaźniki kartogramów i popupów; klucze jak w data.WISL_RDLP / WISL_KRAINY /
+# WISL_WOJEWODZTWA. Opis bez zakresu własności - panel dopisuje go z danych
+# jednostki (PGL LP albo wszystkie formy własności).
+WSKAZNIKI = [
     {'id': 'powierzchnia', 'nazwa': 'Powierzchnia lasów', 'jednostka': 'tys. ha',
-     'opis': 'Powierzchnia lasów w zarządzie PGL LP.', 'paleta': 'Greens'},
+     'opis': 'Powierzchnia lasów.', 'paleta': 'Greens'},
     {'id': 'miazszosc', 'nazwa': 'Miąższość', 'jednostka': 'mln m³',
-     'opis': 'Miąższość grubizny brutto lasów w zarządzie PGL LP.', 'paleta': 'YlGn'},
+     'opis': 'Miąższość grubizny brutto.', 'paleta': 'YlGn'},
     {'id': 'zasobnosc', 'nazwa': 'Zasobność', 'jednostka': 'm³/ha',
-     'opis': 'Przeciętna zasobność grubizny brutto lasów w zarządzie PGL LP.', 'paleta': 'YlGn'},
+     'opis': 'Przeciętna zasobność grubizny brutto.', 'paleta': 'YlGn'},
+    # raporty podają przyrost z dokładnością 0,01; od II cyklu (I cykl to
+    # pierwszy pomiar - bez przyrostu)
+    {'id': 'przyrost', 'nazwa': 'Przyrost', 'jednostka': 'm³/ha/rok',
+     'opis': 'Bieżący roczny przyrost miąższości grubizny brutto (z 5-letniego '
+             'okresu), na 1 ha powierzchni z początku okresu.',
+     'paleta': 'BuGn', 'miejsca': 2},
     {'id': 'wiek', 'nazwa': 'Średni wiek', 'jednostka': 'lat',
-     'opis': 'Przeciętny wiek drzewostanów w zarządzie PGL LP.', 'paleta': 'PuBu'},
+     'opis': 'Przeciętny wiek drzewostanów.', 'paleta': 'PuBu'},
     {'id': 'martwe', 'nazwa': 'Martwe drewno', 'jednostka': 'm³/ha',
-     'opis': 'Przeciętna miąższość martwego drewna w lasach w zarządzie PGL LP.',
+     'opis': 'Przeciętna miąższość martwego drewna (stojącego i leżącego).',
      'paleta': 'YlOrBr'},
 ]
 
@@ -69,20 +78,25 @@ def _progi_klas(wartosci, min_klas=5):
     return [round(start + i * krok, 6) for i in range(n + 1)]
 
 
-def _wskazniki_z_klasami():
-    wynik = []
-    for w in WSKAZNIKI_RDLP:
-        wartosci = [v for okres in WISL_RDLP.values()
+def _klasy(wyniki):
+    """
+    Klasy kolorów wskaźników dla jednego typu jednostek (RDLP, województwa,
+    krainy): {wskaznik: {progi, kolory}}, wspólne dla wszystkich cykli.
+    Każdy typ ma własne klasy - np. powierzchnia krainy sięga 2,4 mln ha.
+    """
+    klasy = {}
+    for w in WSKAZNIKI:
+        wartosci = [v for okres in wyniki.values()
                     for v in (okres.get(w['id']) or []) if v is not None]
         if not wartosci:
             continue
         progi = _progi_klas(wartosci)
         n = len(progi) - 1
         cmap = colormaps[w['paleta']]
-        kolory = [to_hex(cmap(0.2 + 0.75 * i / max(n - 1, 1))) for i in range(n)]
-        wynik.append({k: v for k, v in w.items() if k != 'paleta'}
-                     | {'progi': progi, 'kolory': kolory})
-    return wynik
+        klasy[w['id']] = {'progi': progi,
+                          'kolory': [to_hex(cmap(0.2 + 0.75 * i / max(n - 1, 1)))
+                                     for i in range(n)]}
+    return klasy
 
 
 def _tabela_wynikow(wyniki, nazwy):
@@ -90,7 +104,7 @@ def _tabela_wynikow(wyniki, nazwy):
     tabela = {}
     for okres, dane in sorted(wyniki.items()):
         jednostki = {nazwa: {} for nazwa in nazwy}
-        for w in WSKAZNIKI_RDLP:
+        for w in WSKAZNIKI:
             for nazwa, v in zip(nazwy, dane.get(w['id']) or []):
                 if v is not None:
                     jednostki[nazwa][w['id']] = v
@@ -99,30 +113,52 @@ def _tabela_wynikow(wyniki, nazwy):
     return tabela
 
 
-def wykres_zasobnosci(nazwa, df):
-    """df: kolumny lata ('2005 - 2009'), jednostka, zasobnosc."""
-    data = df[df['jednostka'] == nazwa][['lata', 'zasobnosc']].copy()
-    chart = alt.Chart(data).mark_line(point=True).encode(
+# Wykresy w popupie (przełączane przyciskami, jeden naraz); serie z raportów
+# okien 5-letnich (data.py: zasob_time_rdlp / ZASOBNOSC_OKNA_*, MARTWE_OKNA,
+# PRZYROST_OKNA, UZYTKOWANIE_OKNA).
+WYKRESY = [
+    {'id': 'zasobnosc', 'przycisk': 'Zasobność',
+     'tytul': 'Zasobność w kolejnych okresach 5-letnich', 'os': 'Zasobność [m³/ha]'},
+    {'id': 'martwe', 'przycisk': 'Martwe drewno',
+     'tytul': 'Martwe drewno stojące i leżące', 'os': 'Martwe drewno [m³/ha]'},
+    {'id': 'przyrost', 'przycisk': 'Przyrost',
+     'tytul': 'Bieżący roczny przyrost miąższości', 'os': 'Przyrost [m³/ha/rok]'},
+    {'id': 'uzytkowanie', 'przycisk': 'Użytkowanie',
+     'tytul': 'Użytkowanie rębne i przedrębne w okresie 5-letnim', 'os': 'Użytkowanie [m³/ha]'},
+]
+
+
+def szablon_wykresu(tytul, os_y):
+    """Wykres liniowy Vega-Lite bez danych - popup wstawia serię jednostki jako
+    zbiór 'wartosci' (lata: '2005 - 2009', wartosc)."""
+    return alt.Chart(alt.NamedData('wartosci')).mark_line(point=True).encode(
         x=alt.X('lata:O', title='Okres',
                 axis=alt.Axis(labelAngle=-45, labelOverlap=False)),
-        y=alt.Y('zasobnosc:Q', title='Zasobność [m³/ha]', scale=alt.Scale(zero=False)),
-        tooltip=['lata', 'zasobnosc']
+        y=alt.Y('wartosc:Q', title=os_y, scale=alt.Scale(zero=False)),
+        tooltip=[alt.Tooltip('lata:O', title='Okres'), alt.Tooltip('wartosc:Q', title=os_y)]
     ).properties(
-        title=f"Zasobność w kolejnych okresach 5-letnich",
+        title=tytul,
         width=300,
         height=170
-    )
-    return chart
+    ).to_dict()
 
 
-def _okna_df(okna, nazwy):
-    """ZASOBNOSC_OKNA_* ({'2005-2009': [..]}) -> df jak zasob_time_rdlp()."""
-    return pd.DataFrame([{'lata': okno.replace('-', ' - '), 'jednostka': n, 'zasobnosc': v}
-                         for okno, wartosci in okna.items() for n, v in zip(nazwy, wartosci)])
+def _serie(zrodla, nazwy):
+    """{miara: {okno: [wartości w kolejności nazw]}} -> {miara: {'okna': [...],
+    'dane': {nazwa: [wartości w kolejności okien]}}}"""
+    wynik = {}
+    for miara, okna in zrodla.items():
+        lista = sorted(okna)
+        wynik[miara] = {'okna': lista,
+                        'dane': {n: [okna[o][i] for o in lista] for i, n in enumerate(nazwy)}}
+    return wynik
 
 
-def _wykresy(df):
-    return {nazwa: wykres_zasobnosci(nazwa, df).to_dict() for nazwa in df['jednostka'].unique()}
+def _zasobnosc_rdlp():
+    """zasob_time_rdlp() (lata '2005 - 2009') -> {okno: [wartości w kolejności RDLP]}."""
+    df = zasob_time_rdlp()
+    return {lata.replace(' - ', '-'): [float(g.set_index('rdlp').loc[n, 'zasobnosc']) for n in RDLP]
+            for lata, g in df.groupby('lata')}
 
 
 STYL_PANELI = """
@@ -169,6 +205,7 @@ path.leaflet-interactive:focus { outline: none; }
 }
 .panel-okresy button.aktywny { background: #c8e6c9; border-color: #4c8c4f; font-weight: bold; }
 .panel-okresy button:disabled { color: #bbb; cursor: default; background: #fff; }
+.panel-zakres { color: #2e6b30; font-style: italic; font-size: 11px; margin: 3px 0 5px; }
 .panel-krycie { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
 .panel-krycie input { flex: 1; }
 .panel-legenda { margin-top: 8px; }
@@ -178,6 +215,10 @@ path.leaflet-interactive:focus { outline: none; }
 .panel-opis { margin-top: 6px; color: #666; font-size: 11px; }
 .wisl-popup .zakres { color: #2e6b30; font-style: italic; margin: 1px 0 5px; }
 .wisl-popup .panel-okresy { margin-bottom: 4px; }
+/* cienka czarna linia przed każdym rzędem przełączników: tytuł | wyniki cyklu | wykres */
+.wisl-popup .wisl-cykle, .wisl-popup .wisl-wykresy {
+    border-top: 1px solid #000; padding-top: 7px; margin-top: 7px;
+}
 .wisl-popup table { border-collapse: collapse; margin: 4px 0; }
 .wisl-popup td { padding: 1px 6px 1px 0; }
 .wisl-popup td.w { text-align: right; white-space: nowrap; }
@@ -229,11 +270,22 @@ class PanelWarstw(MacroElement):
     ];
 
     var J = D.jednostki;
+    var podzialy = D.kolejnosc_podzialow;            // RDLP, województwa, krainy
     var okresy = Object.keys(J.rdlp.wyniki).sort();
     var wskazniki = {};
     D.wskazniki.forEach(function(w) { wskazniki[w.id] = w; });
-    var stan = { wskaznik: '', okres: okresy[okresy.length - 1], krycie: 0.85 };
-    var fmt = function(v) { return v.toLocaleString('pl-PL', { maximumFractionDigits: 1 }); };
+    // jeden kartogram: podział (typ jednostek), wskaźnik, cykl, krycie
+    var stan = { podzial: podzialy[0], wskaznik: '', okres: okresy[okresy.length - 1], krycie: 0.85 };
+    // wartości z dokładnością wskaźnika (przyrost: 8,70); progi legendy bez zer (8–9)
+    var fmt = function(v, w, prog) {
+        var m = (w && w.miejsca) || 1;
+        return v.toLocaleString('pl-PL', { minimumFractionDigits: (m > 1 && !prog) ? m : 0,
+                                           maximumFractionDigits: m });
+    };
+    var stanWykresu = D.wykresy[0].id;               // ostatnio wybrany wykres w popupach
+    // podświetlenie po najechaniu - jak w pozostałych warstwach portalu
+    var PODSWIETLENIE = { fillColor: 'yellow', fillOpacity: 0.5, weight: 1 };
+    var aktywny = function(j) { return j === stan.podzial && stan.wskaznik; };
 
     // --- Podkład: dokładnie jeden; etykiety zawsze nad podkładem ---------
     podklady.forEach(function(p) { p.warstwa.setZIndex(0); });
@@ -253,25 +305,29 @@ class PanelWarstw(MacroElement):
         var div = document.createElement('div');
         div.className = 'wisl-popup';
         div.innerHTML = '<div class="tytul"></div><div class="zakres">' + jd.zakres + '</div>' +
-            '<div class="panel-okresy">' + okresy.map(function(o) {
+            // 1) tytuł i zakres | 2) wyniki wybranego cyklu | 3) wykres trendu
+            '<div class="panel-okresy wisl-cykle">' + okresy.map(function(o) {
                 return '<button type="button" data-okres="' + o + '">' + o + '</button>';
-            }).join('') + '</div><table></table>' +
-            (jd.wykresy[nazwa] ? '<div class="wisl-wykres"></div>' : '') +
-            '<div class="zrodlo"></div>';
+            }).join('') + '</div><table></table><div class="zrodlo"></div>' +
+            '<div class="panel-okresy wisl-wykresy">' + D.wykresy.map(function(w) {
+                return '<button type="button" data-wykres="' + w.id + '">' + w.przycisk + '</button>';
+            }).join('') + '</div><div class="wisl-wykres"></div>' +
+            '<div class="zrodlo">Źródło: raporty WISL z kolejnych okresów 5-letnich.</div>';
         function pokaz() {
             var o = jd.wyniki[okres], r = o.dane[nazwa] || {};
             div.querySelector('.tytul').innerHTML = '<b>' + f.properties.etykieta + '</b> · WISL ' + okres;
             div.querySelector('table').innerHTML = D.wskazniki.map(function(w) {
                 var v = r[w.id];
-                return '<tr' + (w.id === stan.wskaznik ? ' class="aktywny"' : '') + '><td>' + w.nazwa +
-                       '</td><td class="w">' + (v === undefined ? '—' : fmt(v) + ' ' + w.jednostka) + '</td></tr>';
+                return '<tr' + (aktywny(j) && w.id === stan.wskaznik ? ' class="aktywny"' : '') + '><td>' +
+                       w.nazwa + '</td><td class="w">' + (v === undefined ? '—' : fmt(v, w) + ' ' + w.jednostka) +
+                       '</td></tr>';
             }).join('');
             div.querySelector('.zrodlo').textContent = 'Źródło: ' + o.zrodlo;
-            div.querySelectorAll('.panel-okresy button').forEach(function(b) {
+            div.querySelectorAll('.wisl-cykle button').forEach(function(b) {
                 b.classList.toggle('aktywny', b.getAttribute('data-okres') === okres);
             });
         }
-        div.querySelector('.panel-okresy').addEventListener('click', function(ev) {
+        div.querySelector('.wisl-cykle').addEventListener('click', function(ev) {
             var b = ev.target.closest('button');
             if (!b) return;
             okres = b.getAttribute('data-okres');
@@ -279,68 +335,74 @@ class PanelWarstw(MacroElement):
         });
         pokaz();
         e.popup.setContent(div);
-        var wykres = div.querySelector('.wisl-wykres');
-        if (wykres && window.vegaEmbed)
-            vegaEmbed(wykres, jd.wykresy[nazwa], { actions: false, renderer: 'svg' })
+        // wykresy: jeden naraz, wybór zapamiętany dla kolejnych popupów
+        function rysujWykres() {
+            var seria = jd.serie[stanWykresu], el = div.querySelector('.wisl-wykres');
+            div.querySelectorAll('.wisl-wykresy button').forEach(function(b) {
+                var s = jd.serie[b.getAttribute('data-wykres')];
+                b.disabled = !s || !s.dane[nazwa];
+                b.classList.toggle('aktywny', b.getAttribute('data-wykres') === stanWykresu);
+            });
+            el.innerHTML = '';
+            if (!seria || !seria.dane[nazwa] || !window.vegaEmbed) return;
+            var spec = JSON.parse(JSON.stringify(D.szablony[stanWykresu]));
+            spec.datasets = { wartosci: seria.okna.map(function(o, i) {
+                return { lata: o.replace('-', ' - '), wartosc: seria.dane[nazwa][i] };
+            }).filter(function(r) { return r.wartosc !== null; }) };
+            vegaEmbed(el, spec, { actions: false, renderer: 'svg' })
                 .then(function() { e.popup.update(); });
-    }
-    function podepnijPopup(j, f, warstwa) {
-        // margines autoprzesuwania z prawej (Leaflet: ...BottomRight = prawy
-        // i dolny): popup nie chowa się pod panelami w prawym górnym rogu
-        warstwa.bindPopup('', { maxWidth: 440, minWidth: 340,
-                                autoPanPaddingBottomRight: L.point(300, 10) });
-        warstwa.on('popupopen', function(e) { otworzPopup(j, f, e); });
+        }
+        div.querySelector('.wisl-wykresy').addEventListener('click', function(ev) {
+            var b = ev.target.closest('button');
+            if (!b || b.disabled) return;
+            stanWykresu = b.getAttribute('data-wykres');
+            rysujWykres();
+        });
+        rysujWykres();
     }
 
-    // --- RDLP: jedna warstwa, styl zależny od wskaźnika i cyklu ----------
-    function klasa(w, v) {
-        for (var i = w.kolory.length - 1; i >= 0; i--) if (v >= w.progi[i]) return i;
+    // --- Warstwy jednostek: granice albo kartogram wskaźnika --------------
+    function klasa(k, v) {
+        for (var i = k.kolory.length - 1; i >= 0; i--) if (v >= k.progi[i]) return i;
         return 0;
     }
-    function wartosc(nazwa) {
-        var r = J.rdlp.wyniki[stan.okres].dane[nazwa] || {};
-        return stan.wskaznik ? r[stan.wskaznik] : undefined;
+    function wartosc(j, nazwa) {
+        if (!aktywny(j)) return undefined;
+        var r = J[j].wyniki[stan.okres].dane[nazwa] || {};
+        return r[stan.wskaznik];
     }
-    function styl(f) {
-        if (!stan.wskaznik)
-            return { color: 'blue', weight: 1.5, fillColor: 'blue', fillOpacity: 0.1 };
-        var w = wskazniki[stan.wskaznik], v = wartosc(f.properties.nazwa);
-        return { color: '#333', weight: 1, fillOpacity: v === undefined ? 0.15 : stan.krycie,
-                 fillColor: v === undefined ? '#ccc' : w.kolory[klasa(w, v)] };
+    function styl(j) {
+        return function(f) {
+            if (!aktywny(j)) return J[j].styl;
+            var k = J[j].klasy[stan.wskaznik], v = wartosc(j, f.properties.nazwa);
+            return { color: '#333', weight: 1, fillOpacity: v === undefined ? 0.15 : stan.krycie,
+                     fillColor: v === undefined ? '#ccc' : k.kolory[klasa(k, v)] };
+        };
     }
-    var rdlp = L.geoJSON(J.rdlp.granice, {
-        style: styl,
-        onEachFeature: function(f, warstwa) {
-            podepnijPopup('rdlp', f, warstwa);
-            warstwa.bindTooltip(function() {
-                var v = wartosc(f.properties.nazwa);
-                return f.properties.etykieta + (v === undefined ? '' :
-                       ': <b>' + fmt(v) + ' ' + wskazniki[stan.wskaznik].jednostka + '</b>');
-            }, { sticky: true });
-            warstwa.on('mouseover', function() { warstwa.setStyle({ weight: 3 }); });
-            warstwa.on('mouseout', function() { rdlp.resetStyle(warstwa); });
-        }
-    });
-
-    // --- Krainy i województwa: granice + ten sam popup --------------------
-    function warstwaGranic(j, kolor) {
-        var styl = { color: kolor, weight: 1.5, fillColor: kolor, fillOpacity: 0.1 };
+    var warstwy = {};
+    podzialy.forEach(function(j) {
         var g = L.geoJSON(J[j].granice, {
-            style: styl,
+            style: styl(j),
             onEachFeature: function(f, warstwa) {
-                podepnijPopup(j, f, warstwa);
-                warstwa.bindTooltip(f.properties.etykieta, { sticky: true });
-                warstwa.on('mouseover', function() {
-                    warstwa.setStyle({ fillColor: 'yellow', fillOpacity: 0.5, weight: 1 });
-                });
+                // margines autoprzesuwania z prawej (Leaflet: ...BottomRight = prawy
+                // i dolny): popup nie chowa się pod panelami w prawym górnym rogu
+                warstwa.bindPopup('', { maxWidth: 440, minWidth: 340,
+                                        autoPanPaddingBottomRight: L.point(300, 10) });
+                warstwa.on('popupopen', function(e) { otworzPopup(j, f, e); });
+                warstwa.bindTooltip(function() {
+                    var v = wartosc(j, f.properties.nazwa);
+                    return f.properties.etykieta + (v === undefined ? '' :
+                           ': <b>' + fmt(v, wskazniki[stan.wskaznik]) + ' ' + wskazniki[stan.wskaznik].jednostka + '</b>');
+                }, { sticky: true });
+                warstwa.on('mouseover', function() { warstwa.setStyle(PODSWIETLENIE); });
                 warstwa.on('mouseout', function() { g.resetStyle(warstwa); });
             }
         });
-        return g;
-    }
-    nakladki.push({ nazwa: 'Krainy przyr.-leśne', warstwa: warstwaGranic('krainy', 'orange'), widoczna: false });
-    nakladki.push({ nazwa: 'Województwa', warstwa: warstwaGranic('wojewodztwa', 'pink'), widoczna: false });
-    nakladki.push({ nazwa: 'RDLP', warstwa: rdlp, widoczna: true });
+        warstwy[j] = g;
+    });
+    D.kolejnosc_warstw.forEach(function(j) {
+        nakladki.push({ nazwa: J[j].warstwa, warstwa: warstwy[j], widoczna: J[j].widoczna, j: j });
+    });
 
     // --- Panel ------------------------------------------------------------
     var panel = L.control({ position: 'topright' });
@@ -357,7 +419,11 @@ class PanelWarstw(MacroElement):
             nakladki.map(function(n, i) {
                 return '<label><input type="checkbox" data-nakladka="' + i + '">' + n.nazwa + '</label>';
             }).join('') + '</div>' +
-            '<div class="panel-sekcja">Wyniki WISL w PGL LP wg RDLP</div>' +
+            '<div class="panel-sekcja">Wyniki WISL</div>' +
+            '<div class="panel-okresy" id="war-podzialy">' + podzialy.map(function(j) {
+                return '<button type="button" data-podzial="' + j + '">' + J[j].przycisk + '</button>';
+            }).join('') + '</div>' +
+            '<div class="panel-zakres" id="war-zakres"></div>' +
             '<select id="war-wskaznik"><option value="">— wyłączone —</option>' +
             D.wskazniki.map(function(w) {
                 return '<option value="' + w.id + '">' + w.nazwa + ' [' + w.jednostka + ']</option>';
@@ -380,14 +446,29 @@ class PanelWarstw(MacroElement):
     panel.addTo(map);
     var kontener = panel.getContainer();
     var el = function(id) { return document.getElementById(id); };
+    function checkbox(j) {
+        var i = nakladki.findIndex(function(n) { return n.j === j; });
+        return kontener.querySelector('input[data-nakladka="' + i + '"]');
+    }
+    // kartogram wymaga warstwy jednostek - włączona i na wierzchu
+    function pokazWarstwe(j) {
+        var cb = checkbox(j);
+        if (!cb.checked) { cb.checked = true; map.addLayer(warstwy[j]); }
+        warstwy[j].bringToFront();
+    }
 
     function odswiez() {
-        rdlp.setStyle(styl);
-        var w = wskazniki[stan.wskaznik];
+        podzialy.forEach(function(j) { warstwy[j].setStyle(styl(j)); });
+        var jd = J[stan.podzial], w = wskazniki[stan.wskaznik];
+        el('war-podzialy').querySelectorAll('button').forEach(function(b) {
+            b.classList.toggle('aktywny', b.getAttribute('data-podzial') === stan.podzial);
+        });
+        el('war-zakres').textContent = jd.zakres;
         el('war-wybor').style.display = w ? '' : 'none';
         if (!w) return;
+        var k = jd.klasy[w.id];
         var dostepne = okresy.filter(function(o) {
-            return Object.values(J.rdlp.wyniki[o].dane).some(function(r) { return r[w.id] !== undefined; });
+            return Object.values(jd.wyniki[o].dane).some(function(r) { return r[w.id] !== undefined; });
         });
         if (dostepne.indexOf(stan.okres) < 0) stan.okres = dostepne[dostepne.length - 1];
         el('war-okresy').querySelectorAll('button').forEach(function(b) {
@@ -395,14 +476,13 @@ class PanelWarstw(MacroElement):
             b.disabled = dostepne.indexOf(o) < 0;
             b.classList.toggle('aktywny', o === stan.okres);
         });
-        var n = w.kolory.length;
-        el('war-legenda').innerHTML = w.kolory.map(function(k, i) {
-            return '<div class="poz"><span class="kolor" style="background:' + k + '"></span>' +
-                   fmt(w.progi[i]) + '–' + fmt(w.progi[i + 1]) + ' ' + w.jednostka + '</div>';
+        el('war-legenda').innerHTML = k.kolory.map(function(kol, i) {
+            return '<div class="poz"><span class="kolor" style="background:' + kol + '"></span>' +
+                   fmt(k.progi[i], w, true) + '–' + fmt(k.progi[i + 1], w, true) + ' ' + w.jednostka + '</div>';
         }).reverse().join('');
-        var o = J.rdlp.wyniki[stan.okres], ogolem = o.ogolem[w.id];
+        var o = jd.wyniki[stan.okres], ogolem = o.ogolem[w.id];
         el('war-info').innerHTML = (ogolem !== undefined ?
-            'PGL LP ogółem: ' + fmt(ogolem) + ' ' + w.jednostka + '<br>' : '') +
+            jd.ogolem_etykieta + ': ' + fmt(ogolem, w) + ' ' + w.jednostka + '<br>' : '') +
             'Klasy wspólne dla wszystkich cykli.';
         el('war-opis').innerHTML = w.opis + '<br>Źródło: ' + o.zrodlo + '.';
     }
@@ -426,11 +506,17 @@ class PanelWarstw(MacroElement):
     kontener.querySelectorAll('input[name="war-podklad"]')[poczatkowy].checked = true;
     ustawPodklad(poczatkowy);
 
+    el('war-podzialy').addEventListener('click', function(e) {
+        var b = e.target.closest('button');
+        if (!b) return;
+        stan.podzial = b.getAttribute('data-podzial');
+        if (stan.wskaznik) pokazWarstwe(stan.podzial);
+        map.closePopup();
+        odswiez();
+    });
     el('war-wskaznik').addEventListener('change', function() {
         stan.wskaznik = this.value;
-        // kartogram wymaga warstwy RDLP
-        var cb = kontener.querySelector('input[data-nakladka="' + (nakladki.length - 1) + '"]');
-        if (stan.wskaznik && !cb.checked) { cb.checked = true; map.addLayer(rdlp); }
+        if (stan.wskaznik) pokazWarstwe(stan.podzial);
         odswiez();
     });
     el('war-okresy').addEventListener('click', function(e) {
@@ -442,7 +528,7 @@ class PanelWarstw(MacroElement):
     });
     el('war-krycie').addEventListener('input', function() {
         stan.krycie = parseFloat(this.value);
-        rdlp.setStyle(styl);
+        warstwy[stan.podzial].setStyle(styl(stan.podzial));
     });
     odswiez();
 })();
@@ -474,33 +560,61 @@ def dodaj_panel_warstw(mapa, granice_rdlp, granice_krainy, granice_wojewodztwa,
     granice_wojewodztwa - GeoDataFrame województw z kolumną JPT_NAZWA_;
     podklady            - lista (nazwa, TileLayer) - wybór jednego;
     nakladki            - lista (nazwa, warstwa folium, widoczna_na_starcie);
-                          krainy, województwa i RDLP (z popupami WISL) panel
-                          dodaje sam, na końcu listy.
+                          krainy, województwa i RDLP (kartogramy i popupy
+                          WISL) panel dodaje sam, na końcu listy.
     Panel dodawać PRZED panelem KDE - w rogu układają się w kolejności dodania.
     """
     dodaj_styl_paneli(mapa)
-    rdlp_df = zasob_time_rdlp().rename(columns={'rdlp': 'jednostka'})
     jednostki = {
         'rdlp': {
+            'przycisk': 'RDLP',
+            'warstwa': 'RDLP', 'widoczna': True,
+            'styl': {'color': 'blue', 'weight': 1.5, 'fillColor': 'blue', 'fillOpacity': 0.1},
             'zakres': 'Dane dotyczą lasów w zarządzie PGL LP.',
+            'ogolem_etykieta': 'PGL LP ogółem',
             'granice': _granice(granice_rdlp, 'NAZWA', lambda r: f"RDLP {r['NAZWA']}"),
             'wyniki': _tabela_wynikow(WISL_RDLP, RDLP),
-            'wykresy': _wykresy(rdlp_df),
-        },
-        'krainy': {
-            'zakres': 'Dane dotyczą lasów wszystkich form własności.',
-            'granice': _granice(granice_krainy, 'Nazwa',
-                                lambda r: f"Kraina {r['Nazwa']} ({r['Kraina']})"),
-            'wyniki': _tabela_wynikow(WISL_KRAINY, KRAINY),
-            'wykresy': _wykresy(_okna_df(ZASOBNOSC_OKNA_KRAINY, KRAINY)),
+            'klasy': _klasy(WISL_RDLP),
+            'serie': _serie({'zasobnosc': _zasobnosc_rdlp(), 'martwe': MARTWE_OKNA['rdlp'],
+                             'przyrost': PRZYROST_OKNA['rdlp'],
+                             'uzytkowanie': UZYTKOWANIE_OKNA['rdlp']}, RDLP),
         },
         'wojewodztwa': {
+            'przycisk': 'Województwa',
+            'warstwa': 'Województwa', 'widoczna': False,
+            'styl': {'color': 'pink', 'weight': 1.5, 'fillColor': 'pink', 'fillOpacity': 0.1},
             'zakres': 'Dane dotyczą lasów wszystkich form własności.',
+            'ogolem_etykieta': 'Polska ogółem',
             'granice': _granice(granice_wojewodztwa, 'JPT_NAZWA_',
                                 lambda r: f"Województwo {r['JPT_NAZWA_']}"),
             'wyniki': _tabela_wynikow(WISL_WOJEWODZTWA, WOJEWODZTWA),
-            'wykresy': _wykresy(_okna_df(ZASOBNOSC_OKNA_WOJEWODZTWA, WOJEWODZTWA)),
+            'klasy': _klasy(WISL_WOJEWODZTWA),
+            'serie': _serie({'zasobnosc': ZASOBNOSC_OKNA_WOJEWODZTWA,
+                             'martwe': MARTWE_OKNA['wojewodztwa'],
+                             'przyrost': PRZYROST_OKNA['wojewodztwa'],
+                             'uzytkowanie': UZYTKOWANIE_OKNA['wojewodztwa']}, WOJEWODZTWA),
+        },
+        'krainy': {
+            'przycisk': 'Krainy',
+            'warstwa': 'Krainy przyr.-leśne', 'widoczna': False,
+            'styl': {'color': 'orange', 'weight': 1.5, 'fillColor': 'orange', 'fillOpacity': 0.1},
+            'zakres': 'Dane dotyczą lasów wszystkich form własności.',
+            'ogolem_etykieta': 'Polska ogółem',
+            'granice': _granice(granice_krainy, 'Nazwa',
+                                lambda r: f"Kraina {r['Nazwa']} ({r['Kraina']})"),
+            'wyniki': _tabela_wynikow(WISL_KRAINY, KRAINY),
+            'klasy': _klasy(WISL_KRAINY),
+            'serie': _serie({'zasobnosc': ZASOBNOSC_OKNA_KRAINY, 'martwe': MARTWE_OKNA['krainy'],
+                             'przyrost': PRZYROST_OKNA['krainy'],
+                             'uzytkowanie': UZYTKOWANIE_OKNA['krainy']}, KRAINY),
         },
     }
-    dane = {'wskazniki': _wskazniki_z_klasami(), 'jednostki': jednostki}
+    dane = {'wskazniki': [{k: v for k, v in w.items() if k != 'paleta'} for w in WSKAZNIKI],
+            'wykresy': [{k: w[k] for k in ('id', 'przycisk')} for w in WYKRESY],
+            'szablony': {w['id']: szablon_wykresu(w['tytul'], w['os']) for w in WYKRESY},
+            'jednostki': jednostki,
+            # jawne kolejności - filtr tojson sortuje klucze słowników
+            'kolejnosc_podzialow': ['rdlp', 'wojewodztwa', 'krainy'],
+            # pola wyboru w "Granice i opisy" (po warstwach folium)
+            'kolejnosc_warstw': ['krainy', 'wojewodztwa', 'rdlp']}
     PanelWarstw(dane, podklady, nakladki, podklad_poczatkowy).add_to(mapa)

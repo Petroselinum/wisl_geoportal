@@ -500,7 +500,10 @@ class PanelKDE(MacroElement):
         el('kde-info').innerHTML = '';
         el('kde-opis').innerHTML = stan.temat ? tematy[stan.temat].opis : '';
         if (!idWarstwy) return;
+        // warstwa z pamięci podręcznej ma krycie z chwili, gdy była ostatnio
+        // widoczna - ustawić bieżące z suwaka
         aktywna = zbuduj(idWarstwy).addTo(map);
+        aktywna.setStyle({ fillOpacity: stan.krycie });
         var dane = K.warstwy[idWarstwy];
         // legenda: najwyższe pasmo na górze, jak na mapach PNG
         el('kde-legenda').innerHTML = dane.legenda.slice().reverse().map(function(p) {
