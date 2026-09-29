@@ -42,6 +42,7 @@ from jinja2 import Template
 from matplotlib.colors import to_hex
 
 from Wisl_quert import PRZYCZYNY_USZK
+from portal_warstwy import dodaj_styl_paneli
 from kde_gat import KOLORY_PROGOW as KOLORY_GAT
 from kde_martwe_drewno import KOLORY_PROGOW_M3HA as KOLORY_MARTWE
 from kde_uszkodzenia import KOLORY_PROGOW_PROC as KOLORY_USZK
@@ -401,6 +402,8 @@ def zbuduj_katalog(katalog_bazowy='.'):
 # tworzony jest dopiero przy pierwszym wyborze warstwy (i zapamiętywany).
 # Warstwy KDE rysowane są w osobnym panelu Leaflet (z-index 450) - nad
 # warstwami administracyjnymi i kartogramami RDLP (overlayPane, 400).
+# Panel stoi w prawym górnym rogu pod panelem "Warstwy" (portal_warstwy.py),
+# z którym dzieli styl (StylPaneli).
 
 PLIK_DANYCH_JS = 'kde_warstwy.js'
 
@@ -409,37 +412,6 @@ class PanelKDE(MacroElement):
     _template = Template("""
 {% macro header(this, kwargs) %}
 <script src="{{ this.plik_js }}" charset="utf-8"></script>
-<style>
-.kde-panel {
-    background: white;
-    padding: 8px 10px;
-    width: 270px;
-    max-height: 75vh;
-    overflow-y: auto;
-    font: 12px/1.35 "Helvetica Neue", Arial, sans-serif;
-    border-radius: 6px;
-    box-shadow: 0 1px 6px rgba(0,0,0,0.35);
-}
-.kde-panel h4 { margin: 0 0 6px; font-size: 14px; }
-.kde-panel label { display: block; margin: 6px 0 2px; font-weight: bold; }
-.kde-panel select { width: 100%; font-size: 12px; }
-.kde-okresy { display: flex; gap: 3px; flex-wrap: wrap; }
-.kde-okresy button {
-    flex: 1 1 0; padding: 3px 0; font-size: 11px; cursor: pointer;
-    border: 1px solid #bbb; border-radius: 3px; background: #f7f7f7;
-}
-.kde-okresy button.aktywny { background: #c8e6c9; border-color: #4c8c4f; font-weight: bold; }
-.kde-okresy button:disabled { color: #bbb; cursor: default; background: #fff; }
-.kde-krycie { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
-.kde-krycie input { flex: 1; }
-.kde-legenda { margin-top: 8px; }
-.kde-legenda .poz { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
-.kde-legenda .kolor { width: 22px; height: 13px; border: 1px solid #777; flex: none; }
-.kde-info { margin-top: 6px; color: #333; }
-.kde-opis { margin-top: 6px; color: #666; font-size: 11px; }
-.kde-panel.zwiniety .kde-tresc { display: none; }
-.kde-naglowek { display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
-</style>
 {% endmacro %}
 
 {% macro script(this, kwargs) %}
@@ -464,33 +436,34 @@ class PanelKDE(MacroElement):
     var stan = { temat: '', wariant: null, okres: null, krycie: 0.65 };
     var cache = {}, aktywna = null;
 
-    var panel = L.control({ position: 'bottomleft' });
+    var panel = L.control({ position: 'topright' });
     panel.onAdd = function() {
-        var d = L.DomUtil.create('div', 'kde-panel');
+        var d = L.DomUtil.create('div', 'panel-wisl');
         var opcje = '<option value="">— wyłączone —</option>' + K.tematy.map(function(t) {
             return '<option value="' + t.id + '">' + t.nazwa + '</option>';
         }).join('');
         d.innerHTML =
-            '<div class="kde-naglowek"><h4>Analizy KDE</h4><span id="kde-zwin" title="Zwiń / rozwiń">▾</span></div>' +
-            '<div class="kde-tresc">' +
-            '<label for="kde-temat">Temat</label><select id="kde-temat">' + opcje + '</select>' +
+            '<div class="panel-naglowek"><h4>Analizy KDE</h4><span class="zwin" title="Zwiń / rozwiń">▾</span></div>' +
+            '<div class="panel-tresc">' +
+            '<label class="pole" for="kde-temat">Temat</label><select id="kde-temat">' + opcje + '</select>' +
             '<div id="kde-wybor" style="display:none">' +
-            '<label for="kde-wariant">Wariant</label><select id="kde-wariant"></select>' +
-            '<label>Okres</label><div class="kde-okresy" id="kde-okresy">' +
+            '<label class="pole" for="kde-wariant">Wariant</label><select id="kde-wariant"></select>' +
+            '<label class="pole">Okres</label><div class="panel-okresy" id="kde-okresy">' +
             wszystkieOkresy.map(function(o) {
                 return '<button type="button" data-okres="' + o + '">' + o + '</button>';
             }).join('') + '</div>' +
-            '<div class="kde-krycie"><span>Krycie</span>' +
+            '<div class="panel-krycie"><span>Krycie</span>' +
             '<input type="range" id="kde-krycie" min="0.1" max="1" step="0.05" value="' + stan.krycie + '"></div>' +
-            '<div class="kde-legenda" id="kde-legenda"></div>' +
-            '<div class="kde-info" id="kde-info"></div>' +
-            '<div class="kde-opis" id="kde-opis"></div>' +
+            '<div class="panel-legenda" id="kde-legenda"></div>' +
+            '<div class="panel-info" id="kde-info"></div>' +
+            '<div class="panel-opis" id="kde-opis"></div>' +
             '</div></div>';
         L.DomEvent.disableClickPropagation(d);
         L.DomEvent.disableScrollPropagation(d);
         return d;
     };
     panel.addTo(map);
+    var kontener = panel.getContainer();
 
     var el = function(id) { return document.getElementById(id); };
 
@@ -576,10 +549,9 @@ class PanelKDE(MacroElement):
         stan.krycie = parseFloat(this.value);
         if (aktywna) aktywna.setStyle({ fillOpacity: stan.krycie });
     });
-    el('kde-zwin').parentNode.addEventListener('click', function() {
-        var p = el('kde-zwin').closest('.kde-panel');
-        p.classList.toggle('zwiniety');
-        el('kde-zwin').textContent = p.classList.contains('zwiniety') ? '▸' : '▾';
+    kontener.querySelector('.panel-naglowek').addEventListener('click', function() {
+        kontener.classList.toggle('zwiniety');
+        kontener.querySelector('.zwin').textContent = kontener.classList.contains('zwiniety') ? '▸' : '▾';
     });
 })();
 {% endmacro %}
@@ -595,7 +567,9 @@ def dodaj_panel_kde(mapa, katalog_wyjsciowy):
     """
     Buduje katalog warstw KDE, zapisuje go jako kde_warstwy.js w katalogu,
     do którego trafi HTML portalu, i dodaje do mapy panel wyboru warstw.
+    Dodawać PO panelu "Warstwy" - w rogu panele układają się w kolejności.
     """
+    dodaj_styl_paneli(mapa)
     katalog = zbuduj_katalog()
     plik = Path(katalog_wyjsciowy) / PLIK_DANYCH_JS
     plik.parent.mkdir(parents=True, exist_ok=True)
