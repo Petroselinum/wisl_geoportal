@@ -15,14 +15,17 @@ liczy tam tylko warianty z przyczynami). Przydatne po zmianie wyglądu map
                                           -> kde_martwe_drewno.martwe_drewno_mapa
     KDE_uszkodzenia/udzial_uszkodzonych_{okres}[_GAT][_nasilN][_przyczN].png
                                           -> kde_uszkodzenia.uszkodzenia
+    KDE_uszkodzenia_ryzyko/ryzyko_{okres}[_GAT][_nasilN][_przyczN]_sparr.png
+                                          -> kde_uszkodzenia_sparr.uszkodzenia (R, sparr)
 
 Uwaga: jeśli po przeliczeniu zmieni się lista osiągniętych progów, zmieni się
 też sufiks _prog... w nazwie pliku - wtedy stary plik zostaje obok nowego
 (portal bierze najnowszy).
 
 Uruchomienie (z działającą bazą i WISL_DB_PASSWORD w środowisku):
-    python regeneruj_mapy_kde.py           - przelicz wszystkie mapy
-    python regeneruj_mapy_kde.py --plan    - tylko wypisz wywołania (bez bazy)
+    python regeneruj_mapy_kde.py                         - przelicz wszystkie mapy
+    python regeneruj_mapy_kde.py kde_uszkodzenia_sparr   - tylko wybrane skrypty
+    python regeneruj_mapy_kde.py --plan [skrypty...]     - tylko wypisz wywołania (bez bazy)
 """
 import importlib
 import os
@@ -31,6 +34,20 @@ import sys
 from pathlib import Path
 
 KATALOG = Path(__file__).resolve().parent
+
+
+def _parametry_uszkodzen(okres_od, okres_do, sufiksy):
+    """'_BK_nasil5_przycz11' -> parametry funkcji uszkodzenia()."""
+    param = dict(rok_start=int(okres_od), rok_end=int(okres_do),
+                 prog_nasil_uszk=None, gatunek=None, przycz_uszk=None)
+    for tok in filter(None, sufiksy.split('_')):
+        if tok.startswith('nasil'):
+            param['prog_nasil_uszk'] = int(tok[5:])
+        elif tok.startswith('przycz'):
+            param['przycz_uszk'] = int(tok[6:])
+        else:
+            param['gatunek'] = tok
+    return param
 
 
 def plan():
@@ -52,21 +69,19 @@ def plan():
                                typ=int(m[3]) if m[3] else None)))
     for f in sorted((KATALOG / 'KDE_uszkodzenia').glob('udzial_uszkodzonych_*.png')):
         m = re.fullmatch(r'udzial_uszkodzonych_(\d{4})-(\d{4})(.*)\.png', f.name)
-        param = dict(rok_start=int(m[1]), rok_end=int(m[2]),
-                     prog_nasil_uszk=None, gatunek=None, przycz_uszk=None)
-        for tok in filter(None, m[3].split('_')):
-            if tok.startswith('nasil'):
-                param['prog_nasil_uszk'] = int(tok[5:])
-            elif tok.startswith('przycz'):
-                param['przycz_uszk'] = int(tok[6:])
-            else:
-                param['gatunek'] = tok
-        wywolania.append(('kde_uszkodzenia', 'uszkodzenia', param))
+        wywolania.append(('kde_uszkodzenia', 'uszkodzenia', _parametry_uszkodzen(m[1], m[2], m[3])))
+    for f in sorted((KATALOG / 'KDE_uszkodzenia_ryzyko').glob('ryzyko_*_sparr.png')):
+        m = re.fullmatch(r'ryzyko_(\d{4})-(\d{4})(.*)_sparr\.png', f.name)
+        wywolania.append(('kde_uszkodzenia_sparr', 'uszkodzenia',
+                          _parametry_uszkodzen(m[1], m[2], m[3])))
     return wywolania
 
 
 def main():
     lista = plan()
+    wybrane = [a for a in sys.argv[1:] if not a.startswith('--')]
+    if wybrane:
+        lista = [w for w in lista if w[0] in wybrane]
     if '--plan' in sys.argv:
         for modul, funkcja, param in lista:
             print(modul, funkcja, param)

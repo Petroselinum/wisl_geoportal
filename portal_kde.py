@@ -351,10 +351,32 @@ def _czytaj_ryzyko(plik):
     geom = _tylko_poligony(shapely.simplify(_napraw(geom), TOLERANCJA_M,
                                             preserve_topology=True))
     geojson = _do_geojson([geom])[0]
+    # opis z kde_uszkodzenia_sparr.py (istotne_..._info.json): liczba
+    # uszkodzonych traktów, czy test był wykonany (próg krajowy), ile obszarów
+    # odrzucono (za mało traktów w obszarze); starsze wyniki go nie mają
+    info = []
+    plik_info = plik[:-len('.geojson')] + '_info.json'
+    if os.path.exists(plik_info):
+        with open(plik_info, encoding='utf-8') as f:
+            d = json.load(f)
+        info.append(f"Uszkodzone trakty: {d['n_uszkodzonych_traktow']}")
+        if not d['testowano']:
+            info.append(f"Za mało uszkodzonych traktów (< {d['min_uszkodzonych_traktow']}) - "
+                        f"test istotności nie był wykonany.")
+        else:
+            if not geojson:
+                info.append('Brak obszarów istotnie podwyższonego ryzyka.')
+            if d['obszary_odrzucone']:
+                info.append(f"Pominięte obszary (< {d['min_traktow_w_obszarze']} uszkodzonych "
+                            f"traktów): {d['obszary_odrzucone']}")
+            info.append(f"Obszar istotny: min. {d['min_traktow_w_obszarze']} uszkodzonych "
+                        f"traktów w środku.")
+    elif not geojson:
+        info.append('Brak obszarów istotnie podwyższonego ryzyka.')
     warstwa = {
         'legenda': [{'kolor': KOLOR_RYZYKA, 'krawedz': KRAWEDZ_RYZYKA,
                      'etykieta': 'istotne ryzyko (p < 0,05)'}],
-        'info': [] if geojson else ['Brak obszarów istotnie podwyższonego ryzyka.'],
+        'info': info,
         'geojson': {'type': 'FeatureCollection', 'features':
                     [{'type': 'Feature', 'properties': {'b': 0}, 'geometry': geojson}]
                     if geojson else []},

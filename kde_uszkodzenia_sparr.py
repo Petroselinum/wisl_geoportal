@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import matplotlib.pyplot as plt
@@ -22,6 +23,32 @@ CRS_OBLICZENIOWY = "EPSG:2180"
 # kde_martwe_drewno.py / kde_gat.py - poniżej tej liczby traktów mapa w
 # ogóle nie jest generowana.
 MIN_TRAKTOW_WIARYGODNY = 100
+
+# Progi dla samych uszkodzeń (analiza map z 2026-09-30: przy kilkudziesięciu
+# uszkodzonych traktach test asymptotyczny sparr wskazywał obszary istotne
+# o polu dziesiątek tys. km2 wyznaczone przez 3-6 punktów, np. zanieczyszczenia
+# powietrza 2020-2025: 19 punktów w kraju, 4 w obszarze 34 tys. km2):
+# - poniżej MIN_USZKODZONYCH_TRAKTOW w kraju test nie jest wykonywany - dobór
+#   pasma (LSCV.risk) i asymptotyka p są wtedy niestabilne; mapa pokazuje
+#   tylko punkty z adnotacją;
+# - obszar istotny (spójna część wyniku) zostaje tylko, gdy zawiera co
+#   najmniej MIN_TRAKTOW_W_OBSZARZE uszkodzonych traktów - problem jest
+#   lokalny, więc sam próg krajowy go nie usuwa.
+MIN_USZKODZONYCH_TRAKTOW = 50
+MIN_TRAKTOW_W_OBSZARZE = 10
+
+
+def odfiltruj_obszary(gdf_istotne, gdf_uszk, minimum=MIN_TRAKTOW_W_OBSZARZE):
+    """
+    Rozbija wynik R na spójne obszary (części wielokąta) i zostawia te,
+    w których leży co najmniej `minimum` uszkodzonych traktów (punkt na
+    granicy obszaru liczy się do niego). Zwraca (zachowane obszary z kolumną
+    n_uszk, liczba obszarów przed filtrem).
+    """
+    obszary = gdf_istotne.explode(index_parts=False).reset_index(drop=True)
+    obszary = obszary[obszary.geometry.notna() & ~obszary.geometry.is_empty].copy()
+    obszary['n_uszk'] = [int(gdf_uszk.geometry.intersects(g).sum()) for g in obszary.geometry]
+    return obszary[obszary['n_uszk'] >= minimum].reset_index(drop=True), len(obszary)
 
 def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatunek: str = None,
                  przycz_uszk: int = None):
@@ -121,34 +148,63 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     sufix_przycz = f"_przycz{przycz_uszk}" if przycz_uszk is not None else ""
     file_prefix = f"ryzyko_{okres}{sufix_gat}{sufix_nasil}{sufix_przycz}"
 
+    geojson_path = f"KDE_uszkodzenia_ryzyko/istotne_{file_prefix}.geojson"
+    info_path = f"KDE_uszkodzenia_ryzyko/istotne_{file_prefix}_info.json"
+    # Wynik z poprzedniego przeliczenia nie może zostać, gdy R tym razem nie
+    # zapisze nowego (za mało uszkodzeń, błąd R) - mapa pokazałaby stary obszar.
+    if os.path.exists(geojson_path):
+        os.remove(geojson_path)
+
+    n_uszk = len(gdf_uszk)
+    testowano = n_uszk >= MIN_USZKODZONYCH_TRAKTOW
+    gdf_istotne = gpd.GeoDataFrame(geometry=[], crs=CRS_OBLICZENIOWY)
+    n_obszarow_r = 0
+
     # ==============================================================================
     # 2. WYWOŁANIE SKRYPTU R
     # ==============================================================================
-    print(f"Obliczanie istotności statystycznej w R (sparr) dla lat {okres}...")
-    try:
-        subprocess.run(
-            [RSCRIPT_PATH, "policz_ryzyko.R", file_prefix],
-            check=True,
-            capture_output=True,
-            text=True
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"Błąd podczas wykonywania Rscript:\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}")
-        return
+    if testowano:
+        print(f"Obliczanie istotności statystycznej w R (sparr) dla lat {okres}...")
+        try:
+            subprocess.run(
+                [RSCRIPT_PATH, "policz_ryzyko.R", file_prefix],
+                check=True,
+                capture_output=True,
+                text=True
+            )
+        except subprocess.CalledProcessError as e:
+            print(f"Błąd podczas wykonywania Rscript:\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}")
+            return
 
-    # ==============================================================================
-    # 3. ODCZYT WYNIKÓW I REDEFINICJA CRS
-    # ==============================================================================
-    geojson_path = f"KDE_uszkodzenia_ryzyko/istotne_{file_prefix}.geojson"
-
-    if os.path.exists(geojson_path):
-        gdf_istotne = gpd.read_file(geojson_path)
-        # R zwraca surowe metry, przypisujemy właściwy CRS siłą
-        if not gdf_istotne.empty:
-            gdf_istotne = gdf_istotne.set_crs(CRS_OBLICZENIOWY, allow_override=True)
-            gdf_istotne.to_file(geojson_path, driver="GeoJSON")  # zapisz poprawiony CRS z powrotem na dysk
+        # ==========================================================================
+        # 3. ODCZYT WYNIKÓW, REDEFINICJA CRS I FILTR OBSZARÓW
+        # ==========================================================================
+        if os.path.exists(geojson_path):
+            wynik_r = gpd.read_file(geojson_path)
+            if not wynik_r.empty:
+                # R zwraca surowe metry, przypisujemy właściwy CRS siłą
+                wynik_r = wynik_r.set_crs(CRS_OBLICZENIOWY, allow_override=True)
+                gdf_istotne, n_obszarow_r = odfiltruj_obszary(wynik_r, gdf_uszk)
     else:
-        gdf_istotne = gpd.GeoDataFrame(geometry=[], crs=CRS_OBLICZENIOWY)
+        print(
+            f"Pominięto test istotności: {n_uszk} uszkodzonych traktów "
+            f"(wymagane min. {MIN_USZKODZONYCH_TRAKTOW}, lata {okres})."
+        )
+
+    # Zawsze zapisujemy wynik (także pusty) i opis - portal odróżnia wtedy
+    # "brak obszarów istotnych" od "test nie był wykonany".
+    gdf_istotne.to_file(geojson_path, driver="GeoJSON")
+    n_odrzuconych = n_obszarow_r - len(gdf_istotne)
+    with open(info_path, 'w', encoding='utf-8') as f:
+        json.dump({
+            'n_uszkodzonych_traktow': n_uszk,
+            'testowano': testowano,
+            'min_uszkodzonych_traktow': MIN_USZKODZONYCH_TRAKTOW,
+            'min_traktow_w_obszarze': MIN_TRAKTOW_W_OBSZARZE,
+            'obszary_z_R': n_obszarow_r,
+            'obszary_odrzucone': n_odrzuconych,
+            'obszary_zachowane': len(gdf_istotne),
+        }, f, ensure_ascii=False, indent=1)
 
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.set_aspect('equal')
@@ -189,11 +245,22 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     # akceptowane w literaturze ograniczenie metody tolerance contours
     # (Kelsall & Diggle), ale trzeba je widzieć razem z wynikiem, nie tylko
     # w logu konsoli.
+    if testowano:
+        uwagi = ["Wynik eksploracyjny - bez korekty na wielokrotne testowanie",
+                 f"Obszary istotne: min. {MIN_TRAKTOW_W_OBSZARZE} uszkodzonych traktów w obszarze"]
+        if n_odrzuconych:
+            uwagi.append(f"Pominięto obszary z < {MIN_TRAKTOW_W_OBSZARZE} uszkodzonymi traktami: "
+                         f"{n_odrzuconych}")
+    else:
+        uwagi = [f"Za mało uszkodzonych traktów ({n_uszk} < {MIN_USZKODZONYCH_TRAKTOW}) - "
+                 f"test istotności nie został wykonany"]
+    # prawy dolny róg - lewy górny zajmuje strzałka północy
     ax.text(
-        0.01, 0.99,
-        "Wynik eksploracyjny - bez korekty na wielokrotne testowanie",
-        transform=ax.transAxes, fontsize=7, color="#555555",
-        va="top", ha="left",
+        0.99, 0.01, "\n".join(uwagi),
+        transform=ax.transAxes, fontsize=7 if testowano else 9,
+        color="#555555" if testowano else "#8b0000",
+        va="bottom", ha="right", zorder=10,
+        bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=2),
     )
     ax.set_xlabel("X [m] (EPSG:2180)")
     ax.set_ylabel("Y [m] (EPSG:2180)")
@@ -204,8 +271,9 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     except Exception:
         pass
 
-    legend_elements = [
+    legend_elements = ([
         mpatches.Patch(facecolor='#ff7f00', edgecolor='#8b0000', linewidth=1.5, alpha=0.6, label='Istotne ryzyko (p < 0.05)'),
+    ] if testowano else []) + [
         mlines.Line2D([], [], color='red', marker='o', linestyle='None', markersize=6, alpha=0.7, label='Trakt uszkodzony'),
         mlines.Line2D([], [], color='gray', marker='o', linestyle='None', markersize=4, alpha=0.4, label='Trakt badany (tło)'),
         mlines.Line2D([], [], color='black', linewidth=1, label='Granica Polski'),
