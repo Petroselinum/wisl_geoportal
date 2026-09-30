@@ -118,7 +118,7 @@ def _tabela_wynikow(wyniki, nazwy):
 # PRZYROST_OKNA, UZYTKOWANIE_OKNA).
 WYKRESY = [
     {'id': 'zasobnosc', 'przycisk': 'Zasobność',
-     'tytul': 'Zasobność w kolejnych okresach 5-letnich', 'os': 'Zasobność [m³/ha]'},
+     'tytul': 'Zasobność grubizny brutto', 'os': 'Zasobność [m³/ha]'},
     {'id': 'martwe', 'przycisk': 'Martwe drewno',
      'tytul': 'Martwe drewno stojące i leżące', 'os': 'Martwe drewno [m³/ha]'},
     {'id': 'przyrost', 'przycisk': 'Przyrost',
@@ -213,12 +213,15 @@ path.leaflet-interactive:focus { outline: none; }
 .panel-legenda .kolor { width: 22px; height: 13px; border: 1px solid #777; flex: none; }
 .panel-info { margin-top: 6px; color: #333; }
 .panel-opis { margin-top: 6px; color: #666; font-size: 11px; }
+.panel-pobierz { display: block; margin-top: 8px; padding: 5px 0; text-align: center;
+                 border: 1px solid #4c8c4f; border-radius: 3px; background: #eef7ee;
+                 color: #1b5e20; font-weight: bold; text-decoration: none; }
+.panel-pobierz:hover { background: #c8e6c9; }
 .wisl-popup .zakres { color: #2e6b30; font-style: italic; margin: 1px 0 5px; }
 .wisl-popup .panel-okresy { margin-bottom: 4px; }
-/* cienka czarna linia przed każdym rzędem przełączników: tytuł | wyniki cyklu | wykres */
-.wisl-popup .wisl-cykle, .wisl-popup .wisl-wykresy {
-    border-top: 1px solid #000; padding-top: 7px; margin-top: 7px;
-}
+/* sekcje popupu oddzielone cienką czarną linią: tytuł | Cykl WISL - informacje podstawowe | Zmiany w kolejnych okresach */
+.wisl-popup .wisl-sekcja { border-top: 1px solid #000; padding-top: 6px; margin-top: 7px; }
+.wisl-popup .podtytul { font-weight: bold; margin-bottom: 4px; }
 .wisl-popup table { border-collapse: collapse; margin: 4px 0; }
 .wisl-popup td { padding: 1px 6px 1px 0; }
 .wisl-popup td.w { text-align: right; white-space: nowrap; }
@@ -282,6 +285,13 @@ class PanelWarstw(MacroElement):
         return v.toLocaleString('pl-PL', { minimumFractionDigits: (m > 1 && !prog) ? m : 0,
                                            maximumFractionDigits: m });
     };
+    // wartość z jednostką; wiek z odmianą: 1 rok, 62 lata, 57 lat
+    function zJednostka(v, w) {
+        var t = fmt(v, w);
+        if (w.jednostka !== 'lat') return t + ' ' + w.jednostka;
+        var n = Math.round(v), d = n % 10, s = n % 100;
+        return t + ' ' + (n === 1 ? 'rok' : (d >= 2 && d <= 4 && (s < 12 || s > 14)) ? 'lata' : 'lat');
+    }
     var stanWykresu = D.wykresy[0].id;               // ostatnio wybrany wykres w popupach
     // podświetlenie po najechaniu - jak w pozostałych warstwach portalu
     var PODSWIETLENIE = { fillColor: 'yellow', fillOpacity: 0.5, weight: 1 };
@@ -305,21 +315,23 @@ class PanelWarstw(MacroElement):
         var div = document.createElement('div');
         div.className = 'wisl-popup';
         div.innerHTML = '<div class="tytul"></div><div class="zakres">' + jd.zakres + '</div>' +
-            // 1) tytuł i zakres | 2) wyniki wybranego cyklu | 3) wykres trendu
+            // 1) tytuł i zakres | 2) wyniki wybranego cyklu | 3) wykres zmian w czasie
+            '<div class="wisl-sekcja"><div class="podtytul">Cykl WISL - informacje podstawowe</div>' +
             '<div class="panel-okresy wisl-cykle">' + okresy.map(function(o) {
                 return '<button type="button" data-okres="' + o + '">' + o + '</button>';
-            }).join('') + '</div><table></table><div class="zrodlo"></div>' +
+            }).join('') + '</div><table></table><div class="zrodlo"></div></div>' +
+            '<div class="wisl-sekcja"><div class="podtytul">Zmiany w kolejnych okresach</div>' +
             '<div class="panel-okresy wisl-wykresy">' + D.wykresy.map(function(w) {
                 return '<button type="button" data-wykres="' + w.id + '">' + w.przycisk + '</button>';
             }).join('') + '</div><div class="wisl-wykres"></div>' +
-            '<div class="zrodlo">Źródło: raporty WISL z kolejnych okresów 5-letnich.</div>';
+            '<div class="zrodlo">Źródło: raporty WISL z kolejnych okresów 5-letnich.</div></div>';
         function pokaz() {
             var o = jd.wyniki[okres], r = o.dane[nazwa] || {};
             div.querySelector('.tytul').innerHTML = '<b>' + f.properties.etykieta + '</b> · WISL ' + okres;
             div.querySelector('table').innerHTML = D.wskazniki.map(function(w) {
                 var v = r[w.id];
                 return '<tr' + (aktywny(j) && w.id === stan.wskaznik ? ' class="aktywny"' : '') + '><td>' +
-                       w.nazwa + '</td><td class="w">' + (v === undefined ? '—' : fmt(v, w) + ' ' + w.jednostka) +
+                       w.nazwa + '</td><td class="w">' + (v === undefined ? '—' : zJednostka(v, w)) +
                        '</td></tr>';
             }).join('');
             div.querySelector('.zrodlo').textContent = 'Źródło: ' + o.zrodlo;
@@ -384,15 +396,17 @@ class PanelWarstw(MacroElement):
         var g = L.geoJSON(J[j].granice, {
             style: styl(j),
             onEachFeature: function(f, warstwa) {
-                // margines autoprzesuwania z prawej (Leaflet: ...BottomRight = prawy
-                // i dolny): popup nie chowa się pod panelami w prawym górnym rogu
+                // marginesy autoprzesuwania: popup nie chowa się pod panelami
+                // w prawym górnym rogu (Leaflet: ...BottomRight = prawy i dolny)
+                // ani pod logo i minimapą w lewym górnym rogu
                 warstwa.bindPopup('', { maxWidth: 440, minWidth: 340,
+                                        autoPanPaddingTopLeft: L.point(170, 70),
                                         autoPanPaddingBottomRight: L.point(300, 10) });
                 warstwa.on('popupopen', function(e) { otworzPopup(j, f, e); });
                 warstwa.bindTooltip(function() {
                     var v = wartosc(j, f.properties.nazwa);
                     return f.properties.etykieta + (v === undefined ? '' :
-                           ': <b>' + fmt(v, wskazniki[stan.wskaznik]) + ' ' + wskazniki[stan.wskaznik].jednostka + '</b>');
+                           ': <b>' + zJednostka(v, wskazniki[stan.wskaznik]) + '</b>');
                 }, { sticky: true });
                 warstwa.on('mouseover', function() { warstwa.setStyle(PODSWIETLENIE); });
                 warstwa.on('mouseout', function() { g.resetStyle(warstwa); });
@@ -482,7 +496,7 @@ class PanelWarstw(MacroElement):
         }).reverse().join('');
         var o = jd.wyniki[stan.okres], ogolem = o.ogolem[w.id];
         el('war-info').innerHTML = (ogolem !== undefined ?
-            jd.ogolem_etykieta + ': ' + fmt(ogolem, w) + ' ' + w.jednostka + '<br>' : '') +
+            jd.ogolem_etykieta + ': ' + zJednostka(ogolem, w) + '<br>' : '') +
             'Klasy wspólne dla wszystkich cykli.';
         el('war-opis').innerHTML = w.opis + '<br>Źródło: ' + o.zrodlo + '.';
     }
@@ -500,6 +514,13 @@ class PanelWarstw(MacroElement):
         if (n.widoczna) map.addLayer(n.warstwa); else map.removeLayer(n.warstwa);
         c.addEventListener('change', function() {
             if (this.checked) map.addLayer(n.warstwa); else map.removeLayer(n.warstwa);
+            // ukrycie warstwy aktywnego kartogramu wyłącza kartogram - inaczej
+            // w panelu zostaje legenda bez mapy
+            if (!this.checked && n.j && n.j === stan.podzial && stan.wskaznik) {
+                stan.wskaznik = '';
+                el('war-wskaznik').value = '';
+                odswiez();
+            }
         });
     });
     var poczatkowy = {{ this.podklad_poczatkowy }};

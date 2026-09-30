@@ -398,11 +398,12 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
     # cały obszar powyżej 5%. Dwie różne konwencje w dwóch różnych wynikach.
     jednostka = 'powierzchni leśnej' if miara == 'powierzchnia' else 'miąższości'
 
-    def etykieta_pasma(i):
+    def etykieta_pasma(i, z_maks=False):
         prog = progi_udzialu[i]
         if i + 1 < len(progi_udzialu):
             return f'{prog:.0%}–{progi_udzialu[i + 1]:.0%} {jednostka}'
-        return f'> {prog:.0%} {jednostka}'
+        maks = f" (maks. {f'{max_udzialu:.1%}'.replace('.', ',')})" if z_maks else ''
+        return f'> {prog:.0%} {jednostka}{maks}'
 
     # ==============================================================================
     # 6. WIZUALIZACJA I EKSTRAKCJA GEOMETRII
@@ -553,10 +554,14 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
     etykieta_punktow = (
         'Trakt z drzewostanem gatunku' if drzewostany else 'Trakt z gatunkiem'
     )
+    # Najwyższe pasmo nie ma progu górnego: zamiast samego "> p" podajemy też
+    # maksimum wygładzonej powierzchni ("> 25 m³/ha (maks. 34,1)") - klasa
+    # nadal zdefiniowana progiem (porównywalna między okresami), a czytelnik
+    # widzi, gdzie wartości się kończą.
     legend_elements = [
         mpatches.Patch(
             facecolor=kolory_pasm[i], edgecolor='#1b5e20', linewidth=1.2, alpha=0.7,
-            label=etykieta_pasma(i),
+            label=etykieta_pasma(i, z_maks=True),
         )
         for i in range(len(progi_udzialu) - 1, -1, -1)
     ] + [

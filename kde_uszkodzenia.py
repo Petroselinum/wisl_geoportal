@@ -378,11 +378,17 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
         pass
 
     # Etykiety legendy opisują PRZEDZIAŁY - contourf koloruje rozłączne pasma.
+    # Najwyższe pasmo nie ma progu górnego: zamiast samego "> p" podajemy też
+    # maksimum wygładzonej powierzchni ("> 25 m³/ha (maks. 34,1)") - klasa
+    # nadal zdefiniowana progiem (porównywalna między okresami), a czytelnik
+    # widzi, gdzie wartości się kończą.
+    maks = f'{max_udzialu:.1f}'.replace('.', ',')
     legend_elements = [
         mpatches.Patch(
             facecolor=kolory_pasm[i], edgecolor='#8b0000', linewidth=1.2, alpha=0.7,
             label=(f'{progi_udzialu[i]:.0f}–{progi_udzialu[i + 1]:.0f}%'
-                   if i + 1 < len(progi_udzialu) else f'> {progi_udzialu[i]:.0f}%'),
+                   if i + 1 < len(progi_udzialu)
+                   else f'> {progi_udzialu[i]:.0f}% (maks. {maks}%)'),
         )
         for i in range(len(progi_udzialu) - 1, -1, -1)
     ] + [

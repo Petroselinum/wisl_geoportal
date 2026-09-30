@@ -29,11 +29,13 @@ Kolory pasm pochodzą z tych samych słowników co w skryptach kde_*
 (KOLORY_PROGOW*), więc portal i mapy PNG mają identyczną legendę.
 """
 import glob
+import hashlib
 import json
 import os
 import re
 import warnings
 from pathlib import Path
+from urllib.parse import quote
 
 import geopandas as gpd
 import shapely
@@ -80,7 +82,7 @@ TYPY_MARTWEGO_DREWNA = {1: 'Leżące (typ 1)', 2: 'Leżące (typ 2)',
 
 TEMATY = {
     'drzewostany': {
-        'nazwa': 'Drzewostany z udziałem gatunku',
+        'nazwa': 'Udział drzewostanów z gat. pan.',
         'opis': 'Udział powierzchni drzewostanów z gatunkiem panującym '
                 '(GAT_PAN_PR) względem tła lasu, estymator Nadaraya-Watsona.',
     },
@@ -152,22 +154,37 @@ def _tylko_poligony(geom):
     return shapely.union_all(czesci) if len(czesci) > 1 else czesci[0]
 
 
+def _napraw(g):
+    """make_valid z metodą 'structure': poligon = obszar zewnętrzny minus
+    dziury. Domyślna metoda 'linework' potrafi przy zdegenerowanym fragmencie
+    ("Too few points") źle odtworzyć wąski pierścień i "zasypać" dziurę -
+    pasmo 5-10% zamieniało się w cały zasięg progu 5% (sosna 2005-2009)."""
+    return shapely.make_valid(g, method='structure', keep_collapsed=False)
+
+
 def _do_geojson(geomy_2180):
-    """Lista geometrii EPSG:2180 (lub None) -> geometrie GeoJSON w EPSG:4326."""
+    """Lista geometrii EPSG:2180 (lub None) -> geometrie GeoJSON w EPSG:4326.
+    Kontrola: pole po przeliczeniu (z powrotem w 2180) musi się zgadzać
+    z polem wejściowym - inaczej ostrzeżenie (błąd naprawy geometrii)."""
     s = gpd.GeoSeries(geomy_2180, crs=2180).to_crs(4326)
     wynik = []
-    for g in s:
+    for wej, g in zip(geomy_2180, s):
         if g is None or g.is_empty:
             wynik.append(None)
             continue
         # set_precision zaokrągla do siatki i od razu naprawia topologię
         # (samo zaokrąglenie współrzędnych potrafi skleić wierzchołki)
-        g = _tylko_poligony(shapely.make_valid(g))
+        g = _tylko_poligony(_napraw(g))
         try:
             g = shapely.set_precision(g, 10 ** -MIEJSCA_DZIESIETNE)
         except shapely.errors.GEOSException:
             g = shapely.set_precision(g.buffer(0), 10 ** -MIEJSCA_DZIESIETNE)
         g = _tylko_poligony(g)
+        if g is not None:
+            pole = gpd.GeoSeries([g], crs=4326).to_crs(2180).iloc[0].area
+            if abs(pole - wej.area) > max(0.01 * wej.area, 1e6):
+                warnings.warn(f'Pole pasma po przeliczeniu do EPSG:4326 {pole / 1e6:,.0f} km2 '
+                              f'zamiast {wej.area / 1e6:,.0f} km2', stacklevel=2)
         wynik.append(shapely.geometry.mapping(g) if g is not None else None)
     return wynik
 
@@ -180,7 +197,7 @@ def _pasma(gdf, kolumna_progu):
     """
     gdf = gdf.sort_values(kolumna_progu).reset_index(drop=True)
     gdf = gdf.to_crs(2180)
-    geomy = [shapely.simplify(shapely.make_valid(g), TOLERANCJA_M, preserve_topology=True)
+    geomy = [shapely.simplify(_napraw(g), TOLERANCJA_M, preserve_topology=True)
              for g in gdf.geometry]
     # Uproszczenie każdego progu osobno może minimalnie wysunąć wyższy próg
     # poza niższy - przycięcie przywraca zagnieżdżenie.
@@ -191,8 +208,12 @@ def _pasma(gdf, kolumna_progu):
     return list(zip(gdf[kolumna_progu].tolist(), _do_geojson(pasma)))
 
 
-def _warstwa(pasma, paleta, format_progu, jednostka, info):
-    """Buduje słownik warstwy: legenda (rosnąco) + FeatureCollection pasm."""
+def _warstwa(pasma, paleta, format_progu, jednostka, info, maks=None):
+    """Buduje słownik warstwy: legenda (rosnąco) + FeatureCollection pasm.
+    Najwyższe pasmo nie ma progu górnego - etykieta podaje próg i maksimum
+    wygładzonej powierzchni ("≥ 25 m³/ha (maks. 34,1)"), tak jak legendy PNG
+    skryptów kde_*: klasa zdefiniowana progiem, a widać, gdzie wartości się
+    kończą."""
     progi = [p for p, _ in pasma]
     legenda, cechy = [], []
     for i, (prog, geom) in enumerate(pasma):
@@ -200,6 +221,8 @@ def _warstwa(pasma, paleta, format_progu, jednostka, info):
             etykieta = f"{format_progu(prog)}–{format_progu(progi[i + 1])}{jednostka}"
         else:
             etykieta = f"≥ {format_progu(prog)}{jednostka}"
+            if maks is not None:
+                etykieta += f" (maks. {format_progu(maks)}{'%' if jednostka == '%' else ''})"
         legenda.append({'kolor': _kolor(paleta, prog, progi), 'etykieta': etykieta})
         if geom is not None:
             cechy.append({'type': 'Feature', 'properties': {'b': i}, 'geometry': geom})
@@ -245,7 +268,7 @@ def _czytaj_gatunki(plik):
             f"Maks. lokalny udział: {_fmt(r['max_udzialu'] * 100, '%')}",
             f"Trakty: {int(r['n_traktow'])} (z gatunkiem: {int(r['n_traktow_gat'])})"]
     warstwa = _warstwa(_pasma(g, 'prog_udzialu'), 'gat',
-                       lambda p: _fmt(p * 100), '%', info)
+                       lambda p: _fmt(p * 100), '%', info, maks=r['max_udzialu'])
     return [(temat, r['gatunek'], _nazwa_gat(r['gatunek']), (_klucz_gat(r['gatunek']),),
              _okres(r), warstwa)]
 
@@ -258,7 +281,7 @@ def _czytaj_zasobnosc(plik):
             f"Maks. lokalna: {_fmt(r['max_zasobnosci_m3ha'], ' m³/ha')}",
             f"Trakty: {int(r['n_traktow'])}"]
     warstwa = _warstwa(_pasma(g, 'prog_zasobnosci_m3ha'), 'zasob_gat' if gat else 'zasob',
-                       _fmt, ' m³/ha', info)
+                       _fmt, ' m³/ha', info, maks=r['max_zasobnosci_m3ha'])
     if gat:
         return [('zasobnosc', gat, _nazwa_gat(gat), (1, _klucz_gat(gat)), _okres(r), warstwa)]
     return [('zasobnosc', 'ogolem', 'Wszystkie gatunki', (0,), _okres(r), warstwa)]
@@ -275,7 +298,8 @@ def _czytaj_martwe(plik):
     info = [f"Średnia krajowa: {_fmt(r['srednia_krajowa_m3ha'], ' m³/ha')}",
             f"Maks. lokalna: {_fmt(r['max_zasobnosci_m3ha'], ' m³/ha')}",
             f"Trakty: {int(r['n_traktow'])}"]
-    warstwa = _warstwa(_pasma(g, 'prog_zasobnosci_m3ha'), 'martwe', _fmt, ' m³/ha', info)
+    warstwa = _warstwa(_pasma(g, 'prog_zasobnosci_m3ha'), 'martwe', _fmt, ' m³/ha', info,
+                       maks=r['max_zasobnosci_m3ha'])
     if typ is None:
         return [('martwe', 'wszystkie', 'Wszystkie typy', (0,), _okres(r), warstwa)]
     return [('martwe', f"typ{typ}", TYPY_MARTWEGO_DREWNA.get(typ, f"Typ {typ}"),
@@ -296,7 +320,8 @@ def _czytaj_uszkodzenia(plik):
     info = [f"Udział krajowy: {_fmt(r['udzial_krajowy_proc'], '%')}",
             f"Maks. lokalny udział: {_fmt(r['max_udzialu_proc'], '%')}",
             f"Trakty: {int(r['liczba_traktow'])}"]
-    warstwa = _warstwa(_pasma(g, 'prog_udzialu_proc'), 'uszk', _fmt, '%', info)
+    warstwa = _warstwa(_pasma(g, 'prog_udzialu_proc'), 'uszk', _fmt, '%', info,
+                       maks=r['max_udzialu_proc'])
     id_war = f"{gat}|{nasil}|{przycz}"
     return [('uszkodzenia', id_war, _opis_uszk(gat, nasil, przycz_nazwa),
              (przycz, gat != 'Wszystkie', _klucz_gat(gat), nasil), _okres(r), warstwa)]
@@ -322,8 +347,8 @@ def _czytaj_ryzyko(plik):
     g = gpd.read_file(plik)
     if g.crs is None:
         g = g.set_crs(2180)
-    geom = shapely.union_all(shapely.make_valid(g.to_crs(2180).geometry.values))
-    geom = _tylko_poligony(shapely.simplify(shapely.make_valid(geom), TOLERANCJA_M,
+    geom = shapely.union_all(_napraw(g.to_crs(2180).geometry.values))
+    geom = _tylko_poligony(shapely.simplify(_napraw(geom), TOLERANCJA_M,
                                             preserve_topology=True))
     geojson = _do_geojson([geom])[0]
     warstwa = {
@@ -349,14 +374,34 @@ ZRODLA = [
 ]
 
 
+def plik_png(plik_geojson):
+    """
+    Mapa PNG zapisana przez skrypt kde_* razem z danym GeoJSON-em (albo None):
+      KDE_gatunki/zasieg_X_epsg4326.geojson -> KDE_gatunki/mapa_X.png
+      KDE_uszkodzenia_ryzyko/istotne_ryzyko_X.geojson
+                                             -> KDE_uszkodzenia_ryzyko/ryzyko_X_sparr.png
+      pozostałe katalogi: ta sama nazwa, rozszerzenie .png
+    """
+    katalog, nazwa = os.path.split(plik_geojson)
+    rdzen = nazwa[:-len('.geojson')]
+    if rdzen.startswith('zasieg_') and rdzen.endswith('_epsg4326'):
+        rdzen = 'mapa_' + rdzen[len('zasieg_'):-len('_epsg4326')]
+    elif rdzen.startswith('istotne_ryzyko_'):
+        rdzen = rdzen[len('istotne_'):] + '_sparr'
+    png = os.path.join(katalog, rdzen + '.png')
+    return png if os.path.exists(png) else None
+
+
 def zbuduj_katalog(katalog_bazowy='.'):
     """
     Zwraca słownik gotowy do zapisania jako JSON:
     {
       'tematy': [{'id', 'nazwa', 'opis',
                   'warianty': [{'id', 'nazwa', 'okresy': {okres: id_warstwy}}]}],
-      'warstwy': {id_warstwy: {'legenda', 'info', 'geojson'}}
+      'warstwy': {id_warstwy: {'legenda', 'info', 'geojson', ['png']}}
     }
+    'png' - {'plik', 'rozmiar'}: mapa PNG z tego samego przeliczenia (plik_png),
+    o ile istnieje.
     Gdy dla tego samego (temat, wariant, okres) istnieje kilka plików (np.
     przeliczenie z innymi progami zmieniło sufiks _prog...), wygrywa
     najnowszy.
@@ -383,6 +428,9 @@ def zbuduj_katalog(katalog_bazowy='.'):
             id_warstwy = f"{temat}|{id_war}|{okres}"
             war['okresy'][okres] = id_warstwy
             warstwy[id_warstwy] = w['warstwa']
+            png = plik_png(w['plik'])
+            if png:
+                warstwy[id_warstwy]['png'] = {'plik': png, 'rozmiar': os.path.getsize(png)}
         if not warianty:
             continue
         lista = sorted(warianty.values(), key=lambda w: (w['klucz'], w['nazwa']))
@@ -448,7 +496,7 @@ class PanelKDE(MacroElement):
             '<label class="pole" for="kde-temat">Temat</label><select id="kde-temat">' + opcje + '</select>' +
             '<div id="kde-wybor" style="display:none">' +
             '<label class="pole" for="kde-wariant">Wariant</label><select id="kde-wariant"></select>' +
-            '<label class="pole">Okres</label><div class="panel-okresy" id="kde-okresy">' +
+            '<label class="pole">Cykl WISL</label><div class="panel-okresy" id="kde-okresy">' +
             wszystkieOkresy.map(function(o) {
                 return '<button type="button" data-okres="' + o + '">' + o + '</button>';
             }).join('') + '</div>' +
@@ -457,6 +505,8 @@ class PanelKDE(MacroElement):
             '<div class="panel-legenda" id="kde-legenda"></div>' +
             '<div class="panel-info" id="kde-info"></div>' +
             '<div class="panel-opis" id="kde-opis"></div>' +
+            '<a class="panel-pobierz" id="kde-png" style="display:none" ' +
+            'title="Mapa PNG (300 dpi) z tego samego przeliczenia skryptem kde_*"></a>' +
             '</div></div>';
         L.DomEvent.disableClickPropagation(d);
         L.DomEvent.disableScrollPropagation(d);
@@ -499,6 +549,7 @@ class PanelKDE(MacroElement):
         el('kde-legenda').innerHTML = '';
         el('kde-info').innerHTML = '';
         el('kde-opis').innerHTML = stan.temat ? tematy[stan.temat].opis : '';
+        el('kde-png').style.display = 'none';
         if (!idWarstwy) return;
         // warstwa z pamięci podręcznej ma krycie z chwili, gdy była ostatnio
         // widoczna - ustawić bieżące z suwaka
@@ -511,6 +562,15 @@ class PanelKDE(MacroElement):
                    (p.krawedz ? ';border-color:' + p.krawedz : '') + '"></span>' + p.etykieta + '</div>';
         }).join('');
         el('kde-info').innerHTML = dane.info.join('<br>');
+        // mapa PNG oglądanej warstwy do pobrania
+        if (dane.png) {
+            var a = el('kde-png');
+            a.href = dane.png.url;
+            a.setAttribute('download', dane.png.nazwa);
+            a.textContent = '⬇ Pobierz mapę PNG (' + (dane.png.rozmiar / 1048576).toLocaleString('pl-PL',
+                { maximumFractionDigits: 1 }) + ' MB)';
+            a.style.display = '';
+        }
     }
 
     function ustawOkresy() {
@@ -574,10 +634,20 @@ def dodaj_panel_kde(mapa, katalog_wyjsciowy):
     """
     dodaj_styl_paneli(mapa)
     katalog = zbuduj_katalog()
+    # mapy PNG nie są kopiowane (~500 MB) - odnośnik względny z katalogu HTML-a
+    # (serwer udostępnia katalog projektu, np. ../KDE_gatunki/mapa_...png)
+    for warstwa in katalog['warstwy'].values():
+        if 'png' in warstwa:
+            png = warstwa['png'].pop('plik')
+            warstwa['png']['url'] = quote(Path(os.path.relpath(png, katalog_wyjsciowy)).as_posix())
+            warstwa['png']['nazwa'] = os.path.basename(png)
     plik = Path(katalog_wyjsciowy) / PLIK_DANYCH_JS
     plik.parent.mkdir(parents=True, exist_ok=True)
-    plik.write_text('window.KDE_WARSTWY = '
-                    + json.dumps(katalog, ensure_ascii=False, separators=(',', ':'))
-                    + ';\n', encoding='utf-8')
-    PanelKDE().add_to(mapa)
+    tresc = ('window.KDE_WARSTWY = '
+             + json.dumps(katalog, ensure_ascii=False, separators=(',', ':')) + ';\n')
+    plik.write_text(tresc, encoding='utf-8')
+    # wersja w adresie (skrót treści): przeglądarka nie użyje starej kopii
+    # z pamięci podręcznej po przebudowie danych
+    wersja = hashlib.md5(tresc.encode('utf-8')).hexdigest()[:10]
+    PanelKDE(plik_js=f'{PLIK_DANYCH_JS}?v={wersja}').add_to(mapa)
     return katalog

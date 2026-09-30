@@ -416,12 +416,17 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
     # jest to poprawne, bo linia wyznacza właśnie przekroczenie progu.
     # Wielokąty w GeoJSON są z kolei kumulatywne (zagnieżdżone), tak jak
     # w kde_gat.py - patrz atrybut prog_zasobnosci_m3ha.
+    # Najwyższe pasmo nie ma progu górnego: zamiast samego "> p" podajemy też
+    # maksimum wygładzonej powierzchni ("> 25 m³/ha (maks. 34,1)") - klasa
+    # nadal zdefiniowana progiem (porównywalna między okresami), a czytelnik
+    # widzi, gdzie wartości się kończą.
+    maks = f'{max_zasobnosci:.1f}'.replace('.', ',')
     legend_elements = [
         mpatches.Patch(
             facecolor=kolory_pasm[i], edgecolor='#6b3d00', linewidth=1.2, alpha=0.7,
             label=(f'{progi_zasobnosci[i]:.0f}–{progi_zasobnosci[i + 1]:.0f} m³/ha'
                    if i + 1 < len(progi_zasobnosci)
-                   else f'> {progi_zasobnosci[i]:.0f} m³/ha'),
+                   else f'> {progi_zasobnosci[i]:.0f} m³/ha (maks. {maks})'),
         )
         for i in range(len(progi_zasobnosci) - 1, -1, -1)
     ] + [

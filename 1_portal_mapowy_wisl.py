@@ -7,8 +7,10 @@ from pathlib import Path
 from portal_kde import dodaj_panel_kde
 from portal_warstwy import dodaj_panel_warstw
 
-#Aplikację należy uruchamiać na lokalnym serverze (z katalogu projektu):
-# python -m http.server 8000
+#Aplikację należy uruchamiać na lokalnym serwerze (serwer.py - jak
+# `python -m http.server`, ale przeglądarka nie pokazuje starej wersji
+# z pamięci podręcznej po przebudowie portalu):
+# python serwer.py 8000
 # http://localhost:8000/wygerenowane_animacje/aplikacja_mapowa.html
 #
 # Warstwy analityczne pochodzą z plików GeoJSON zapisanych przez skrypty
@@ -110,6 +112,9 @@ logo_html = '''
 '''
 
 m.get_root().html.add_child(Element(logo_html))
+
+# Tytuł karty przeglądarki
+m.get_root().header.add_child(Element('<title>Portal mapowy WISL</title>'))
 
 #Nadleśnictwa
 

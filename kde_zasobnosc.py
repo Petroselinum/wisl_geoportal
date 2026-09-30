@@ -367,11 +367,17 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
     # Etykiety legendy opisują PRZEDZIAŁY - contourf koloruje rozłączne pasma.
     # Etykiety przy liniach konturu zostają progowe ("> 300 m³/ha"), bo linia
     # wyznacza właśnie przekroczenie progu.
+    # Najwyższe pasmo nie ma progu górnego: zamiast samego "> p" podajemy też
+    # maksimum wygładzonej powierzchni ("> 25 m³/ha (maks. 34,1)") - klasa
+    # nadal zdefiniowana progiem (porównywalna między okresami), a czytelnik
+    # widzi, gdzie wartości się kończą.
+    maks = f'{max_zasobnosci:.1f}'.replace('.', ',')
     legend_elements = [
         mpatches.Patch(
             facecolor=kolory_pasm[i], edgecolor='#1b5e20', linewidth=1.2, alpha=0.7,
             label=(f'{progi_zasobnosci[i]:.0f}–{progi_zasobnosci[i + 1]:.0f} m³/ha'
-                   if i + 1 < len(progi_zasobnosci) else f'> {progi_zasobnosci[i]:.0f} m³/ha'),
+                   if i + 1 < len(progi_zasobnosci)
+                   else f'> {progi_zasobnosci[i]:.0f} m³/ha (maks. {maks})'),
         )
         for i in range(len(progi_zasobnosci) - 1, -1, -1)
     ] + [
