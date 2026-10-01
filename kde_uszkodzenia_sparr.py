@@ -254,13 +254,16 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     else:
         uwagi = [f"Za mało uszkodzonych traktów ({n_uszk} < {MIN_USZKODZONYCH_TRAKTOW}) - "
                  f"test istotności nie został wykonany"]
-    # prawy dolny róg - lewy górny zajmuje strzałka północy
-    ax.text(
-        0.99, 0.01, "\n".join(uwagi),
-        transform=ax.transAxes, fontsize=7 if testowano else 9,
+    # przypis pod mapą (pod opisem osi X) - w środku mapy każdy róg jest zajęty:
+    # strzałka północy, podziałka, legenda, a w prawym dolnym są Bieszczady,
+    # gdzie często wypadają obszary istotne
+    ax.annotate(
+        "\n".join(uwagi),
+        xy=(0, 0), xycoords="axes fraction",
+        xytext=(0, -40), textcoords="offset points",
+        fontsize=8 if testowano else 9,
         color="#555555" if testowano else "#8b0000",
-        va="bottom", ha="right", zorder=10,
-        bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=2),
+        va="top", ha="left", annotation_clip=False,
     )
     ax.set_xlabel("X [m] (EPSG:2180)")
     ax.set_ylabel("Y [m] (EPSG:2180)")
@@ -282,7 +285,8 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
 
     fig.savefig(f"KDE_uszkodzenia_ryzyko/{file_prefix}_sparr.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print(f"Zakończono pomyślnie. Wyniki z testem sparr zapisano dla lat {okres}.")
+    print(f"Zakończono pomyślnie. Mapę {'z testem sparr' if testowano else 'bez testu'} "
+          f"zapisano dla lat {okres}.")
 
 if __name__ == "__main__":
     '''
