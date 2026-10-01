@@ -7,6 +7,8 @@ wyświetlenia w przeglądarce:
     KDE_gatunki/zasieg_*_epsg4326.geojson        (kde_gat.py)
     KDE_zasobnosc/zasobnosc_*.geojson            (kde_zasobnosc.py)
     KDE_martwe_drewno/martwe_drewno_*.geojson    (kde_martwe_drewno.py)
+    KDE_przyrost/przyrost_*.geojson              (kde_przyrost.py)
+    KDE_uzytkowanie/uzytkowanie_*.geojson        (kde_uzytkowanie.py)
     KDE_uszkodzenia/udzial_uszkodzonych_*.geojson (kde_uszkodzenia.py)
     KDE_uszkodzenia_ryzyko/istotne_ryzyko_*.geojson (kde_uszkodzenia_sparr.py)
 
@@ -47,6 +49,8 @@ from Wisl_quert import PRZYCZYNY_USZK
 from portal_warstwy import dodaj_styl_paneli
 from kde_gat import KOLORY_PROGOW as KOLORY_GAT
 from kde_martwe_drewno import KOLORY_PROGOW_M3HA as KOLORY_MARTWE
+from kde_przyrost import KOLORY_PROGOW_PRZYROSTU as KOLORY_PRZYROST
+from kde_uzytkowanie import KOLORY_PROGOW_UZYTKOWANIA as KOLORY_UZYT, RODZAJE_UZYTKOWANIA
 from kde_uszkodzenia import KOLORY_PROGOW_PROC as KOLORY_USZK
 from kde_zasobnosc import (KOLORY_PROGOW_M3HA as KOLORY_ZASOB,
                            KOLORY_PROGOW_GAT_M3HA as KOLORY_ZASOB_GAT)
@@ -80,6 +84,10 @@ KOLEJNOSC_GAT = list(SLOWNIK_GATUNKOW)
 TYPY_MARTWEGO_DREWNA = {1: 'Leżące (typ 1)', 2: 'Leżące (typ 2)',
                         3: 'Leżące (typ 3)', 4: 'Posusz', 5: 'Złomy'}
 
+# Rodzaje martwego drewna (kde_martwe_drewno.RODZAJE_MARTWEGO_DREWNA)
+RODZAJE_MARTWEGO_DREWNA = {'lezace': 'Leżące (ścięte, wywrócone, złamane)',
+                           'stojace': 'Stojące (posusz i złomy)'}
+
 TEMATY = {
     'drzewostany': {
         'nazwa': 'Udział drzewostanów z gat. pan.',
@@ -95,6 +103,22 @@ TEMATY = {
         'nazwa': 'Zasobność drzewostanów',
         'opis': 'Lokalna, wygładzona średnia zasobność drzew żywych '
                 '(m³/ha, OBL_ADRES_POW.ZASOBNOSC).',
+    },
+    'przyrost': {
+        'nazwa': 'Przyrost miąższości',
+        'opis': 'Lokalny, wygładzony bieżący roczny przyrost miąższości '
+                '(m³/ha/rok, OBL_ADRES_POW.PRZYROST) między dwoma pomiarami tej '
+                'samej powierzchni (5 lat). Cykl = lata pomiaru końcowego; co roku '
+                'mierzone jest ok. 20% powierzchni, więc np. cykl 2010-2014 '
+                'obejmuje lata 2005-2014.',
+    },
+    'uzytkowanie': {
+        'nazwa': 'Użytkowanie (pozyskanie)',
+        'opis': 'Lokalne, wygładzone użytkowanie (m³/ha, OBL_ADRES_POW.POZ_REBNE_V '
+                'i POZ_PRZEDR_V) w okresie między dwoma pomiarami tej samej '
+                'powierzchni (5 lat). Cykl = lata pomiaru końcowego; co roku '
+                'mierzone jest ok. 20% powierzchni, więc np. cykl 2010-2014 '
+                'obejmuje użytkowanie z lat 2005-2014.',
     },
     'martwe': {
         'nazwa': 'Martwe drewno',
@@ -124,6 +148,8 @@ PALETY = {
     'uszk': _kolory_hex(KOLORY_USZK),
     'zasob': _kolory_hex(KOLORY_ZASOB),
     'zasob_gat': _kolory_hex(KOLORY_ZASOB_GAT),
+    'przyrost': _kolory_hex(KOLORY_PRZYROST),
+    **{f"uzyt_{r or 'razem'}": _kolory_hex(k) for r, k in KOLORY_UZYT.items()},
 }
 
 
@@ -295,15 +321,46 @@ def _czytaj_martwe(plik):
         typ = int(typ)
     except (TypeError, ValueError):
         typ = None
+    rodzaj = r.get('rodzaj_martwego_drewna')
     info = [f"Średnia krajowa: {_fmt(r['srednia_krajowa_m3ha'], ' m³/ha')}",
             f"Maks. lokalna: {_fmt(r['max_zasobnosci_m3ha'], ' m³/ha')}",
             f"Trakty: {int(r['n_traktow'])}"]
     warstwa = _warstwa(_pasma(g, 'prog_zasobnosci_m3ha'), 'martwe', _fmt, ' m³/ha', info,
                        maks=r['max_zasobnosci_m3ha'])
+    if rodzaj in RODZAJE_MARTWEGO_DREWNA:
+        return [('martwe', rodzaj, RODZAJE_MARTWEGO_DREWNA[rodzaj],
+                 (1, list(RODZAJE_MARTWEGO_DREWNA).index(rodzaj)), _okres(r), warstwa)]
     if typ is None:
         return [('martwe', 'wszystkie', 'Wszystkie typy', (0,), _okres(r), warstwa)]
     return [('martwe', f"typ{typ}", TYPY_MARTWEGO_DREWNA.get(typ, f"Typ {typ}"),
-             (1, typ), _okres(r), warstwa)]
+             (2, typ), _okres(r), warstwa)]
+
+
+def _info_sredniej(r):
+    """Opis warstwy z kde_srednia.mapa_sredniej (przyrost, użytkowanie)."""
+    jedn = ' ' + r['jednostka']
+    return [f"Średnia krajowa: {_fmt(r['srednia_krajowa'], jedn)}",
+            f"Maks. lokalna: {_fmt(r['max_lokalna'], jedn)}",
+            f"Trakty: {int(r['n_traktow'])}"]
+
+
+def _czytaj_przyrost(plik):
+    g = gpd.read_file(plik)
+    r = g.iloc[0]
+    warstwa = _warstwa(_pasma(g, 'prog'), 'przyrost', _fmt, ' ' + r['jednostka'],
+                       _info_sredniej(r), maks=r['max_lokalna'])
+    return [('przyrost', 'ogolem', 'Wszystkie drzewostany', (0,), _okres(r), warstwa)]
+
+
+def _czytaj_uzytkowanie(plik):
+    g = gpd.read_file(plik)
+    r = g.iloc[0]
+    rodzaj = r['rodzaj_uzytkowania']
+    klucz = None if rodzaj == 'razem' else rodzaj
+    warstwa = _warstwa(_pasma(g, 'prog'), f'uzyt_{rodzaj}', _fmt, ' ' + r['jednostka'],
+                       _info_sredniej(r), maks=r['max_lokalna'])
+    return [('uzytkowanie', rodzaj, RODZAJE_UZYTKOWANIA[klucz].capitalize(),
+             (list(RODZAJE_UZYTKOWANIA).index(klucz),), _okres(r), warstwa)]
 
 
 def _czytaj_uszkodzenia(plik):
@@ -355,12 +412,14 @@ def _czytaj_ryzyko(plik):
     # uszkodzonych traktów, czy test był wykonany (próg krajowy), ile obszarów
     # odrzucono (za mało traktów w obszarze); starsze wyniki go nie mają
     info = []
+    testowano = True
     plik_info = plik[:-len('.geojson')] + '_info.json'
     if os.path.exists(plik_info):
         with open(plik_info, encoding='utf-8') as f:
             d = json.load(f)
+        testowano = d['testowano']
         info.append(f"Uszkodzone trakty: {d['n_uszkodzonych_traktow']}")
-        if not d['testowano']:
+        if not testowano:
             info.append(f"Za mało uszkodzonych traktów (< {d['min_uszkodzonych_traktow']}) - "
                         f"test istotności nie był wykonany.")
         else:
@@ -374,8 +433,9 @@ def _czytaj_ryzyko(plik):
     elif not geojson:
         info.append('Brak obszarów istotnie podwyższonego ryzyka.')
     warstwa = {
+        # bez testu nie ma czego opisywać w legendzie (jak na mapie PNG)
         'legenda': [{'kolor': KOLOR_RYZYKA, 'krawedz': KRAWEDZ_RYZYKA,
-                     'etykieta': 'istotne ryzyko (p < 0,05)'}],
+                     'etykieta': 'istotne ryzyko (p < 0,05)'}] if testowano else [],
         'info': info,
         'geojson': {'type': 'FeatureCollection', 'features':
                     [{'type': 'Feature', 'properties': {'b': 0}, 'geometry': geojson}]
@@ -391,6 +451,8 @@ ZRODLA = [
     ('KDE_gatunki/zasieg_*_epsg4326.geojson', _czytaj_gatunki),
     ('KDE_zasobnosc/zasobnosc_*.geojson', _czytaj_zasobnosc),
     ('KDE_martwe_drewno/martwe_drewno_*.geojson', _czytaj_martwe),
+    ('KDE_przyrost/przyrost_*.geojson', _czytaj_przyrost),
+    ('KDE_uzytkowanie/uzytkowanie_*.geojson', _czytaj_uzytkowanie),
     ('KDE_uszkodzenia/udzial_uszkodzonych_*.geojson', _czytaj_uszkodzenia),
     ('KDE_uszkodzenia_ryzyko/istotne_ryzyko_*.geojson', _czytaj_ryzyko),
 ]

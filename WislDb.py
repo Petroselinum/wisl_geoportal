@@ -29,3 +29,7 @@ class DRZEWA_MARTWE(SQLModel, table=True):
 class OBL_DRZEWA_MARTWE(SQLModel, table=True):
     __tablename__ = 'OBL_DRZEWA_MARTWE'
     __table__ = Table('OBL_DRZEWA_MARTWE', metadata, autoload_with=engine)
+
+class POW_A_B(SQLModel, table=True):
+    __tablename__ = 'POW_A_B'
+    __table__ = Table('POW_A_B', metadata, autoload_with=engine)

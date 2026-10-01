@@ -1,4 +1,4 @@
-from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, engine
+from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, POW_A_B, engine
 from sqlmodel import Session, select, func, cast, Float, Integer, literal_column, text
 from sqlalchemy import or_, and_, case
 import geopandas as gpd
@@ -439,6 +439,120 @@ def query_zasobnosc_gat(gatunek: str, rok_start: int = None, rok_end: int = None
         ).all()
 
 
+# Koło pomiarowe (powierzchnia A) od III cyklu ma zawsze 400 m2 (r = 11,28 m).
+# W cyklach I-II było 100, 200, 400 albo 500 m2 zależnie od drzewostanu.
+KOLO_OD_III_CYKLU_M2 = 400.0
+
+
+def _kolo_przyrostu_m2():
+    # PRZYROST, POZ_REBNE_V i POZ_PRZEDR_V (OBL_ADRES_POW) to wielkości z
+    # pomiaru powtórzonego po 5 latach, w m3 NA PODPOWIERZCHNI (nie na ha):
+    #   PRZYROST = P_V_II - P_V_I + P_U  (miąższość na końcu - na początku
+    #              okresu + ubytki, P_U = P_U_2 + P_U_3),
+    #   POZ_REBNE_V / POZ_PRZEDR_V = P_U_2 przypisane do użytkowania rębnego
+    #              albo przedrębnego (na podpowierzchni nigdy oba naraz).
+    # Wszystko liczone na części koła WSPÓLNEJ dla obu pomiarów, czyli na
+    # mniejszym z kół poprzedniego i bieżącego cyklu (np. II -> III cykl:
+    # 200 m2 tam, gdzie w II cyklu koło miało 200 m2). Przeliczenie na hektar:
+    #   m3/ha = wartość / (WSP_Z * KOLO_PU / 10000)
+    # Sprawdzone na danych: suma P_V_II / suma (ZASOBNOSC * WSP_Z * KOLO_PU)
+    # = 1,010 / 1,000 / 1,001 w cyklach II / III / IV. Stałe 400 m2 zaniżało
+    # wyniki w cyklach II-III, gdzie ok. połowa punktów ma koło wspólne 200 m2.
+    #
+    # Koło punktu w cyklach I-II = suma POW_A jego podpowierzchni (POW_A_B):
+    # POW_A to powierzchnia podpowierzchni, a nie koła (np. 24+56+79+87+154 =
+    # 400 m2) - sprawdzone: POW_A = WSP_Z * suma w 92-94% podpowierzchni.
+    # Szukane po numerze PUNKTU (NR_PODPOW // 100), bo numery podpowierzchni
+    # zmieniają się między cyklami (podział punktu na nowo). POW_A_B.POW_A_PU
+    # nie nadaje się - w IV cyklu jest puste, w II-III wypełnione częściowo.
+    # Zwraca wyrażenie z powierzchnią KOLO_PU [m2] i funkcję dołączającą
+    # potrzebne złączenia do zapytania.
+    cykl = cast(OBL_ADRES_POW.NR_CYKLU, Integer)
+    pkt_pow = POW_A_B.NR_PODPOW // literal_column('100')
+    kolo = (
+        select(POW_A_B.NR_CYKLU, pkt_pow.label('PKT'), cast(func.sum(POW_A_B.POW_A), Float).label('KOLO'))
+        .where(POW_A_B.NR_CYKLU < 3)
+        .group_by(POW_A_B.NR_CYKLU, pkt_pow)
+    ).subquery()
+    kolo_akt, kolo_pop = kolo.alias('kolo_akt'), kolo.alias('kolo_pop')
+    pkt = OBL_ADRES_POW.NR_PODPOW // literal_column('100')
+
+    m2_akt = case((cykl >= 3, KOLO_OD_III_CYKLU_M2), else_=kolo_akt.c.KOLO)
+    m2_pop = case((cykl - 1 >= 3, KOLO_OD_III_CYKLU_M2), else_=kolo_pop.c.KOLO)
+    kolo_pu = case((m2_pop < m2_akt, m2_pop), else_=m2_akt)
+
+    def dolacz(zapytanie):
+        return (zapytanie
+                .outerjoin(kolo_akt, (kolo_akt.c.NR_CYKLU == cykl) & (kolo_akt.c.PKT == pkt))
+                .outerjoin(kolo_pop, (kolo_pop.c.NR_CYKLU == cykl - 1) & (kolo_pop.c.PKT == pkt)))
+    return kolo_pu, dolacz
+
+
+def _przyrost_uzytkowanie(kolumny, warunki, rok_start, rok_end):
+    # Wspólne uniwersum przyrostu i użytkowania: podpowierzchnie leśne
+    # (KODY_R_POW_LAS - także zręby i halizny powstałe w tym okresie),
+    # STATUS_GRUNTU <= 3, pomierzone ponownie po 5 latach (rok pomiaru
+    # końcowego w [rok_start, rok_end]; odstęp w bazie to zawsze 5 lat).
+    # Średnia traktu ważona WSP_Z - jak query_zasobnosc: każdy punkt siatki
+    # reprezentuje tę samą powierzchnię kraju niezależnie od wielkości koła.
+    kolo_pu, dolacz = _kolo_przyrostu_m2()
+    wsp_z = cast(OBL_ADRES_POW.WSP_Z, Float)
+    # wartość na ha podpowierzchni razy jej waga: WSP_Z * wartość / (WSP_Z * ha_kola)
+    ha_kola = cast(kolo_pu / 10000.0, Float)
+    NR_Traktu = (OBL_ADRES_POW.NR_PODPOW // literal_column('1000')).label('NR_Traktu')
+    with Session(engine) as session:
+        zapytanie = (
+            select(NR_Traktu,
+                   *[(func.sum(func.coalesce(cast(k, Float), 0.0) / ha_kola) / dzielnik
+                      / func.sum(wsp_z)).label(nazwa) for nazwa, k, dzielnik in kolumny],
+                   func.sum(wsp_z).label('SUMA_WSP_Z'))
+            .join(ADRES_POW,
+                (ADRES_POW.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
+                (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
+        )
+        return session.exec(
+            dolacz(zapytanie)
+            .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
+                   ADRES_POW.R_POW_PR.in_(KODY_R_POW_LAS),
+                   ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX,
+                   wsp_z > 0,
+                   kolo_pu > 0,
+                   *warunki)
+            .group_by(NR_Traktu)
+        ).all()
+
+
+def query_przyrost(rok_start: int = None, rok_end: int = None):
+    # Bieżący roczny przyrost miąższości [m3/ha/rok] = PRZYROST z 5 lat / 5,
+    # na trakt (SR_PRZYROST) + SUMA_WSP_Z jako waga do KDE.
+    # Podpowierzchnie z PRZYROST = NULL są POMIJANE (brak danych, nie zero):
+    # nowe podpowierzchnie bez pomiaru początkowego oraz drzewostany usunięte
+    # w okresie (zrąb - jest pozyskanie, ale nie ma przyrostu). Ujemny
+    # PRZYROST to błąd danych (po 1 rekordzie w III i IV cyklu, ok. -0,03 m3).
+    # Brak w I cyklu (2005-2009) - nie było pomiaru wcześniejszego.
+    return _przyrost_uzytkowanie(
+        [('SR_PRZYROST', OBL_ADRES_POW.PRZYROST, 5.0)],
+        [OBL_ADRES_POW.PRZYROST.isnot(None), cast(OBL_ADRES_POW.PRZYROST, Float) >= 0],
+        rok_start, rok_end)
+
+
+def query_uzytkowanie(rok_start: int = None, rok_end: int = None):
+    # Użytkowanie (pozyskanie) w 5-letnim okresie między pomiarami [m3/ha] na trakt:
+    # SR_REBNE (POZ_REBNE_V), SR_PRZEDREBNE (POZ_PRZEDR_V) + SUMA_WSP_Z.
+    # Wartości 5-letnie jak w wykresach portalu (data.UZYTKOWANIE_OKNA).
+    # Uniwersum: wszystkie podpowierzchnie pomierzone ponownie (P_V_I NOT
+    # NULL - jest pomiar z początku okresu), a nie tylko te z wycinką -
+    # POZ_* = NULL oznacza brak użytkowania, czyli 0. Ujemne POZ (1 rekord
+    # w IV cyklu, -0,003 m3) pomijane jak błąd danych.
+    return _przyrost_uzytkowanie(
+        [('SR_REBNE', OBL_ADRES_POW.POZ_REBNE_V, 1.0),
+         ('SR_PRZEDREBNE', OBL_ADRES_POW.POZ_PRZEDR_V, 1.0)],
+        [OBL_ADRES_POW.P_V_I.isnot(None),
+         func.coalesce(cast(OBL_ADRES_POW.POZ_REBNE_V, Float), 0.0) >= 0,
+         func.coalesce(cast(OBL_ADRES_POW.POZ_PRZEDR_V, Float), 0.0) >= 0],
+        rok_start, rok_end)
+
+
 def query_drzewostany_uszk(rok_start: int = None, rok_end: int = None):
     with Session(engine) as session:
         powierzchnie_uszk = session.exec(
@@ -517,7 +631,12 @@ def martwe_drewno(rok_start: int = None, rok_end: int = None):
                 (DRZEWA_MARTWE.NR_PODPOW == ADRES_POW.NR_PODPOW) &
                 (DRZEWA_MARTWE.NR_CYKLU == ADRES_POW.NR_CYKLU))
             .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
-                   ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX)
+                   ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX,
+                   # Ujemna miąższość to błąd danych (3 daglezje-posusz w II-III
+                   # cyklu, -0,01 do -0,06 m3). W sumie wszystkich typów ginęła
+                   # w trakcie, ale przy samym drewnie stojącym trakt dostawał
+                   # ujemną wagę i gaussian_kde przerywał.
+                   OBL_DRZEWA_MARTWE.MIAZSZOSC >= 0)
             .group_by(NR_Traktu_m, OBL_ADRES_POW.NR_PODPOW, DRZEWA_MARTWE.TYP)
         ).cte('martwe')
 

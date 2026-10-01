@@ -83,8 +83,21 @@ KOLORY_PROGOW_M3HA = {
     20: plt.cm.YlOrBr(0.92),
 }
 
+# Rodzaje martwego drewna wg DRZEWA_MARTWE.TYP (słownik SL_TYP / SL_OBL_TYP):
+# 1 ścięcie, 2 wywrócenie, 3 złamanie (drewno LEŻĄCE), 4 stojący posusz,
+# 5 stojący złom (drewno STOJĄCE), 6 inny (tylko II cykl, 0,03 m3/ha - wchodzi
+# wyłącznie do sumy wszystkich typów). Drzewa stojące = posusz + złomy stojące,
+# tak jak OBL_ADRES_POW.ZAS_MARTW_1 (sprawdzone: 4,26 / 5,34 m3/ha w III / IV
+# cyklu, dokładnie suma typów 4 i 5). W I cyklu (2005-2009) mierzono tylko
+# drewno leżące - mapy drewna stojącego dla tego okresu nie ma.
+RODZAJE_MARTWEGO_DREWNA = {
+    'lezace': {'nazwa': 'leżące', 'typy': (1, 2, 3)},
+    'stojace': {'nazwa': 'stojące', 'typy': (4, 5)},
+}
 
-def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | None = None, progi: list[float] = PROGI_ZASOBNOSCI_M3HA):
+
+def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | None = None, progi: list[float] = PROGI_ZASOBNOSCI_M3HA,
+                       rodzaj: str | None = None):
     """
     Lokalna, wygładzona przestrzennie średnia zasobność martwego drewna
     (m3/ha), z zaznaczeniem obszarów przekraczających kilka stałych progów
@@ -106,6 +119,10 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
         SUMA_WSP_Z obowiązuje dla każdego typu w danym trakcie, więc
         sumowanie SR_MIAZSZOSC po typach jest poprawne matematycznie).
 
+    rodzaj: 'lezace' (typy 1-3) albo 'stojace' (typy 4-5, posusz i złomy
+        stojące) - patrz RODZAJE_MARTWEGO_DREWNA. Nie łączyć z `typ`.
+        None = bez podziału na rodzaje.
+
     progi: lista stałych progów zasobności (m3/ha) do zaznaczenia jako
         osobne zakresy na mapie. Progi poza zakresem danych cyklu (>= max)
         są automatycznie pomijane. Kolor każdego progu jest stały
@@ -113,6 +130,9 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
         porównywalne wizualnie.
     """
     okres = f"{rok_start}-{rok_end}"
+    if rodzaj is not None and (rodzaj not in RODZAJE_MARTWEGO_DREWNA or typ is not None):
+        raise ValueError(f"rodzaj: {list(RODZAJE_MARTWEGO_DREWNA)} (bez jednoczesnego `typ`)")
+    nazwa_rodzaju = RODZAJE_MARTWEGO_DREWNA[rodzaj]['nazwa'] if rodzaj else None
     res = martwe_drewno(rok_start=rok_start, rok_end=rok_end)
     if not res:
         print(f"Brak danych z bazy dla lat {okres}.")
@@ -132,7 +152,14 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
 
     # Licznik: zasobność wybranego typu (albo suma wszystkich typów, gdy
     # typ=None — wiersze placeholder z SR_MIAZSZOSC=0 nic tu nie zmieniają).
-    df_f = df[df['TYP'] == typ] if typ is not None else df
+    if rodzaj is not None:
+        df_f = df[df['TYP'].isin(RODZAJE_MARTWEGO_DREWNA[rodzaj]['typy'])]
+    else:
+        df_f = df[df['TYP'] == typ] if typ is not None else df
+    if not (df_f['SR_MIAZSZOSC'] > 0).any():
+        print(f"Lata {okres}: brak martwego drewna wybranego rodzaju/typu w danych - pomijam mapę"
+              + (" (w I cyklu WISL nie mierzono drzew martwych stojących)." if rodzaj == 'stojace' else "."))
+        return
     zasobnosc_trakty = df_f.groupby('NR_TRAKTU', as_index=False)['SR_MIAZSZOSC'].sum()
 
     # Złączenie: trakty bez wybranego typu (ale obecne w populacji) dostają 0,
@@ -237,7 +264,7 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
         return
 
     print(
-        f"Martwe drewno | Lata: {okres} | n_traktow={len(gdf_model)} | "
+        f"Martwe drewno{' ' + nazwa_rodzaju if nazwa_rodzaju else ''} | Lata: {okres} | n_traktow={len(gdf_model)} | "
         f"srednia krajowa={wspolczynnik_korekty_skali:.2f} m3/ha | "
         + " | ".join(f"> {prog:.0f} m3/ha" for prog in progi_zasobnosci)
         + f" | max={max_zasobnosci:.2f} m3/ha"
@@ -396,8 +423,9 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
          if i + 1 < len(progi_zasobnosci) else f'>{prog:.0f}')
         for i, prog in enumerate(progi_zasobnosci)
     )
+    tytul_rodzaj = {'lezace': ' leżącego', 'stojace': ' stojącego'}.get(rodzaj, '')
     ax.set_title(
-        f"Zasobność martwego drewna — zakresy {zakresy_opis} m³/ha (Lata: {okres})",
+        f"Zasobność martwego drewna{tytul_rodzaj} — zakresy {zakresy_opis} m³/ha (Lata: {okres})",
         fontsize=11,
     )
     ax.set_xlabel("X [m] (EPSG:2180)")
@@ -431,7 +459,7 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
         for i in range(len(progi_zasobnosci) - 1, -1, -1)
     ] + [
         mlines.Line2D([], [], color='orange', marker='o', linestyle='None', markersize=6, alpha=0.35,
-                      label='Trakt z martwym drewnem'),
+                      label='Trakt z martwym drewnem' + {'lezace': ' leżącym', 'stojace': ' stojącym'}.get(rodzaj, '')),
         mlines.Line2D([], [], color='gray', marker='o', linestyle='None', markersize=4, alpha=0.4,
                       label='Trakt badany (tło)'),
         mlines.Line2D([], [], color='black', linewidth=1, label='Granica Polski'),
@@ -456,6 +484,7 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
                 'rok_start': rok_start,
                 'rok_end': rok_end,
                 'typ_martwego_drewna': typ if typ is not None else 'wszystkie',
+                'rodzaj_martwego_drewna': rodzaj or 'wszystkie',
                 'prog_zasobnosci_m3ha': prog,
                 # Średnia WAŻONA POWIERZCHNIĄ (suma objętości / suma
                 # reprezentowanej powierzchni), a nie np.nanmean po oczkach
@@ -473,7 +502,7 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
         crs=CRS_OBLICZENIOWY,
     )
 
-    sufiks_typ = f"_typ{typ}" if typ is not None else ""
+    sufiks_typ = f"_typ{typ}" if typ is not None else (f"_{rodzaj}" if rodzaj else "")
     sufiks_prog = "_".join(str(int(p)) for p in progi_zasobnosci)
     file_prefix = f"martwe_drewno_{okres}{sufiks_typ}_prog{sufiks_prog}"
 
@@ -487,5 +516,6 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
 
 if __name__ == "__main__":
     from Wisl_quert import CYKLE_LATA
-    for rok_start, rok_end in CYKLE_LATA:
-        martwe_drewno_mapa(rok_start=rok_start, rok_end=rok_end)
+    for rodzaj in [None, 'lezace', 'stojace']:
+        for rok_start, rok_end in CYKLE_LATA:
+            martwe_drewno_mapa(rok_start=rok_start, rok_end=rok_end, rodzaj=rodzaj)
