@@ -7,6 +7,7 @@ from matplotlib import lines as mlines
 import pandas as pd
 import geopandas as gpd
 import contextily as cx
+from shapely.geometry import Polygon
 
 from Wisl_quert import query_drzewostany_uszk, PRZYCZYNY_USZK
 from matplotlib_map_utils.core.north_arrow import north_arrow
@@ -37,6 +38,33 @@ MIN_TRAKTOW_WIARYGODNY = 100
 MIN_USZKODZONYCH_TRAKTOW = 50
 MIN_TRAKTOW_W_OBSZARZE = 10
 
+
+def napraw_dziury(gdf_istotne):
+    """
+    Przypisuje dziury do właściwych obszarów. sf 1.0.14 (st_as_sfc.owin
+    w policz_ryzyko.R) dokleja dziurę do złego wielokąta, gdy jej właściwy
+    obszar nie jest pierwszy na liście - indeks z podzbioru obszarów
+    zawierających dziurę użyty jest jako indeks w całej liście (sprawdzone
+    2026-10-05: 6 z 38 plików z nieprawidłową geometrią "Hole lies outside
+    shell", 2010-2014 przycz26 - dziura 212 km2 w złym obszarze, 2 trakty
+    policzone do niewłaściwego obszaru). Każda dziura trafia do najmniejszego
+    obszaru, który ją zawiera.
+    """
+    czesci = gdf_istotne.geometry.explode(index_parts=False)
+    czesci = czesci[czesci.notna() & ~czesci.is_empty]
+    obrysy = [Polygon(p.exterior) for p in czesci]
+    dziury = [[] for _ in obrysy]
+    for p in czesci:
+        for pierscien in p.interiors:
+            dziura = Polygon(pierscien)
+            wlasciciele = [i for i, o in enumerate(obrysy) if o.contains(dziura)]
+            # dziura poza wszystkimi obszarami nic nie wycina - pomijamy
+            if wlasciciele:
+                dziury[min(wlasciciele, key=lambda i: obrysy[i].area)].append(pierscien)
+    return gpd.GeoDataFrame(
+        geometry=[Polygon(o.exterior, d) for o, d in zip(obrysy, dziury)],
+        crs=gdf_istotne.crs,
+    )
 
 def odfiltruj_obszary(gdf_istotne, gdf_uszk, minimum=MIN_TRAKTOW_W_OBSZARZE):
     """
@@ -184,7 +212,7 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
             if not wynik_r.empty:
                 # R zwraca surowe metry, przypisujemy właściwy CRS siłą
                 wynik_r = wynik_r.set_crs(CRS_OBLICZENIOWY, allow_override=True)
-                gdf_istotne, n_obszarow_r = odfiltruj_obszary(wynik_r, gdf_uszk)
+                gdf_istotne, n_obszarow_r = odfiltruj_obszary(napraw_dziury(wynik_r), gdf_uszk)
     else:
         print(
             f"Pominięto test istotności: {n_uszk} uszkodzonych traktów "
@@ -215,12 +243,13 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
             facecolor='#ff7f00',
             edgecolor='#8b0000',
             linewidth=1.5,
-            alpha=0.6
+            alpha=0.5,
+            zorder=4
         )
 
-    gdf_model.plot(ax=ax, color='gray', markersize=3, alpha=0.3)
-    gdf_uszk.plot(ax=ax, color='red', markersize=8, alpha=0.7)
-    poland.boundary.plot(ax=ax, color='black', linewidth=1)
+    gdf_model.plot(ax=ax, color='gray', markersize=3, alpha=0.5, zorder=2)
+    gdf_uszk.plot(ax=ax, color='red', markersize=4, alpha=0.7, zorder=3)
+    poland.boundary.plot(ax=ax, color='black', linewidth=1, zorder=1)
 
     try:
         north_arrow(ax, location="upper left", rotation={"crs": poland.crs, "reference": "center"}, shadow=False, scale=0.4)

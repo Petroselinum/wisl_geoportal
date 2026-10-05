@@ -3,3 +3,6 @@ __pycache__
 *.pyc
 .ipynb_checkpoints/
 .env
+
+# raporty WISL (PDF, ~665 MB) - pobierane z bdl.lasy.gov.pl, poza repozytorium
+raporty_wisl/

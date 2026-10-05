@@ -1,6 +1,99 @@
 import numpy as np
 import matplotlib.text as mtext
+from matplotlib import patheffects
+import shapely
+from shapely.geometry import Polygon
 from scipy.signal import fftconvolve
+
+
+def kontur_na_zasieg(segs):
+    """
+    Zamienia pętle konturu jednego progu (cs.allsegs[i] z ax.contour) na
+    wielokąt obszaru >= prog. Pętle jednego poziomu nigdy się nie przecinają,
+    więc obszar to różnica symetryczna (XOR) wszystkich pętli: pętla wewnątrz
+    pętli to dziura (obszar PONIŻEJ progu otoczony wyższymi wartościami),
+    pętla wewnątrz dziury - znów wyspa >= prog.
+
+    Wcześniej pętle łączono przez union_all - pętla wewnętrzna była wtedy
+    wchłaniana przez zewnętrzną i zasięg nie miał żadnych dziur (sprawdzone
+    2026-10-05 na przyroście 2010-2014: zasięg > 10 m3/ha/rok obejmował 311
+    tys. km2, czyli prawie całą Polskę razem z obszarem 9-10 w centrum).
+    """
+    zasieg = Polygon()
+    for seg in segs:
+        if len(seg) >= 3:
+            petla = Polygon(seg)
+            if not petla.is_valid:
+                petla = shapely.make_valid(petla)
+            zasieg = zasieg.symmetric_difference(petla)
+    return zasieg.buffer(0)
+
+
+def etykietuj_kontury(ax, progi, zasiegi_geom, granica_polski, tekst_progu, kolor,
+                      fontsize=6):
+    """
+    Nanosi etykiety progów wzdłuż linii konturu (TekstWzdlugKonturu) - na
+    KAŻDEJ pętli konturu danego progu, czyli na obrysach zewnętrznych i na
+    dziurach zasięgu >= prog (dziura = zamknięty kontur wokół obszaru PONIŻEJ
+    progu; dawniej etykietowane były tylko obrysy zewnętrzne pierścienia
+    pasma, więc takie kontury zostawały bez opisu). Pętle różnych progów się
+    nie pokrywają, więc etykiety się nie dublują.
+
+    Etykieta jest PROGOWA ("> 5%") - linia wyznacza przekroczenie progu.
+
+    Pomijane są pętle, na których napis byłby nieczytelny:
+    - pole wnętrza < MIN_POWIERZCHNIA (znikome strzępki zasięgu),
+    - obwód < MIN_OBWOD_W_ETYKIETACH x długość napisu - na krótkiej pętli
+      napis zawija się wokół niej i nachodzi sam na siebie.
+    Punkty kotwiczące leżą dalej niż BORDER_TOL od granicy Polski (etykieta
+    nie może wyglądać jak opis granicy kraju), wybierane zachłannie od
+    najdalszego od granicy, w odstępach co najmniej MIN_ODSTEP.
+
+    tekst_progu: funkcja prog -> napis etykiety.
+    """
+    MIN_POWIERZCHNIA = 3e8         # m^2 (300 km^2)
+    MIN_OBWOD_W_ETYKIETACH = 4     # obwód pętli / długość napisu (z zapasem na krzywiznę)
+    BORDER_TOL = 15_000            # m
+    MIN_ODSTEP = 150_000           # m
+
+    kandydaci = []
+    for prog, geom in zip(progi, zasiegi_geom):
+        czesci = [g for g in getattr(geom, 'geoms', [geom])
+                  if isinstance(g, Polygon) and not g.is_empty]
+        for pierscien in [r for g in czesci for r in (g.exterior, *g.interiors)]:
+            if Polygon(pierscien).area < MIN_POWIERZCHNIA:
+                continue
+            wierzcholki = np.array(pierscien.coords)
+            odleglosc = shapely.distance(shapely.points(wierzcholki), granica_polski)
+            maska_daleko = odleglosc > BORDER_TOL
+            if not maska_daleko.any():
+                continue
+            wybrane_idx = []
+            for idx in np.argsort(-np.where(maska_daleko, odleglosc, -np.inf)):
+                if not maska_daleko[idx]:
+                    break
+                if all(np.linalg.norm(wierzcholki[idx] - wierzcholki[w]) >= MIN_ODSTEP
+                       for w in wybrane_idx):
+                    wybrane_idx.append(int(idx))
+            kandydaci += [(prog, pierscien.length, wierzcholki, idx) for idx in wybrane_idx]
+
+    if not kandydaci:
+        return
+    # Jednorazowe rysowanie figury daje działający renderer - potrzebny do
+    # zmierzenia FAKTYCZNEJ szerokości napisu przed wycięciem fragmentu konturu.
+    ax.get_figure().canvas.draw()
+    renderer = ax.get_figure().canvas.get_renderer()
+    for prog, obwod, wierzcholki, idx in kandydaci:
+        tekst = tekst_progu(prog)
+        dlugosc = dlugosc_tekstu_w_danych(ax, tekst, fontsize=fontsize, renderer=renderer)
+        if obwod < MIN_OBWOD_W_ETYKIETACH * dlugosc:
+            continue
+        fragment = wytnij_fragment_konturu(wierzcholki, idx, dlugosc)
+        if len(fragment) < 2:
+            continue
+        etykieta = TekstWzdlugKonturu(fragment[:, 0], fragment[:, 1], tekst, ax,
+                                      fontsize=fontsize, color=kolor)
+        etykieta.set_path_effects([patheffects.withStroke(linewidth=2.5, foreground='white')])
 
 
 class TekstWzdlugKonturu(mtext.Text):

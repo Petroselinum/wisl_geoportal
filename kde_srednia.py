@@ -16,19 +16,16 @@ import textwrap
 import matplotlib.pyplot as plt
 from matplotlib import patches as mpatches
 from matplotlib import lines as mlines
-from matplotlib import patheffects
 import numpy as np
 import geopandas as gpd
 import shapely
 from scipy.stats import gaussian_kde
-from shapely.geometry import Polygon
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
 from kde_common import (
     wymus_wspolne_pasmo,
-    TekstWzdlugKonturu,
-    wytnij_fragment_konturu,
-    dlugosc_tekstu_w_danych,
+    kontur_na_zasieg,
+    etykietuj_kontury,
 )
 import contextily as cx
 
@@ -153,59 +150,12 @@ def mapa_sredniej(df, rok_start, rok_end, progi, kolory_progow, *, jednostka, ty
                     colors=[kolor_linii], linewidths=1.2)
 
     # Wielokąty KUMULATYWNE (zagnieżdżone) - cs.allsegs[i] to kontur i-tego progu
-    zasiegi_geom = []
-    for segs in cs.allsegs:
-        polygons = []
-        for seg in segs:
-            if len(seg) >= 3:
-                poly = Polygon(seg)
-                if not poly.is_valid:
-                    poly = shapely.make_valid(poly)
-                polygons.append(poly)
-        zasiegi_geom.append(shapely.union_all(polygons).buffer(0) if polygons else Polygon())
+    zasiegi_geom = [kontur_na_zasieg(segs) for segs in cs.allsegs]
 
-    # Etykiety wzdłuż konturów - punkt kotwiczący w PIERŚCIENIU pasma (poza
-    # zagnieżdżonym wyższym progiem), z dala od granicy Polski, powtarzane
-    # co MIN_ODSTEP_ETYKIET (szczegóły w kde_martwe_drewno.py).
-    MIN_POWIERZCHNIA_ETYKIETY = 3e8  # m^2 (300 km^2)
-    BORDER_TOL_ETYKIETY = 15_000     # m
-    MIN_ODSTEP_ETYKIET = 150_000     # m
-    kandydaci_etykiet = []
-    for i, prog in enumerate(progi_okresu):
-        geom = zasiegi_geom[i]
-        if i + 1 < len(zasiegi_geom):
-            geom = geom.difference(zasiegi_geom[i + 1])
-        if geom.is_empty:
-            continue
-        for czesc in [g for g in getattr(geom, 'geoms', [geom]) if isinstance(g, Polygon)]:
-            if czesc.is_empty or czesc.area < MIN_POWIERZCHNIA_ETYKIETY:
-                continue
-            wierzcholki = np.array(czesc.exterior.coords)
-            odleglosc = shapely.distance(shapely.points(wierzcholki), granica_polski)
-            maska_daleko = odleglosc > BORDER_TOL_ETYKIETY
-            if not maska_daleko.any():
-                continue
-            wybrane_idx = []
-            for idx in np.argsort(-np.where(maska_daleko, odleglosc, -np.inf)):
-                if not maska_daleko[idx]:
-                    break
-                if all(np.linalg.norm(wierzcholki[idx] - wierzcholki[w]) >= MIN_ODSTEP_ETYKIET
-                       for w in wybrane_idx):
-                    wybrane_idx.append(int(idx))
-            kandydaci_etykiet += [(prog, wierzcholki, idx) for idx in wybrane_idx]
-
-    if kandydaci_etykiet:
-        fig.canvas.draw()
-        renderer = fig.canvas.get_renderer()
-        for prog, wierzcholki, idx in kandydaci_etykiet:
-            tekst = f"> {_liczba(prog)} {jednostka}"
-            dlugosc = dlugosc_tekstu_w_danych(ax, tekst, fontsize=6, renderer=renderer)
-            fragment = wytnij_fragment_konturu(wierzcholki, idx, dlugosc)
-            if len(fragment) < 2:
-                continue
-            etykieta = TekstWzdlugKonturu(fragment[:, 0], fragment[:, 1], tekst, ax,
-                                          fontsize=6, color=kolor_etykiet)
-            etykieta.set_path_effects([patheffects.withStroke(linewidth=2.5, foreground='white')])
+    # Etykiety progów wzdłuż wszystkich pętli konturu (także zamkniętych
+    # wokół obszarów poniżej progu) - szczegóły w kde_common.etykietuj_kontury.
+    etykietuj_kontury(ax, progi_okresu, zasiegi_geom, granica_polski,
+                      lambda p: f"> {_liczba(p)} {jednostka}", kolor=kolor_etykiet)
 
     gdf_model.plot(ax=ax, color='gray', markersize=3, alpha=0.3)
     if etykieta_dodatnich:

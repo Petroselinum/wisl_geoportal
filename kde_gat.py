@@ -2,19 +2,16 @@ import os
 import matplotlib.pyplot as plt
 from matplotlib import patches as mpatches
 from matplotlib import lines as mlines
-from matplotlib import patheffects
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 import shapely
 from scipy.stats import gaussian_kde
-from shapely.geometry import Polygon
 from Wisl_quert import query_udzial_gat, query_tlo_lasu, query_mlode_uprawy
 from kde_common import (
     wymus_wspolne_pasmo,
-    TekstWzdlugKonturu,
-    wytnij_fragment_konturu,
-    dlugosc_tekstu_w_danych,
+    kontur_na_zasieg,
+    etykietuj_kontury,
 )
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
@@ -430,81 +427,12 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
 
     # Geometria każdego zakresu osobno - cs.allsegs[i] to segmenty konturu
     # dla i-tego progu z `progi_udzialu`, w tej samej kolejności.
-    zasiegi_geom = []
-    for segs in cs.allsegs:
-        polygons = []
-        for seg in segs:
-            if len(seg) >= 3:
-                poly = Polygon(seg)
-                if not poly.is_valid:
-                    poly = shapely.make_valid(poly)
-                polygons.append(poly)
-        zasiegi_geom.append(shapely.union_all(polygons).buffer(0) if polygons else Polygon())
+    zasiegi_geom = [kontur_na_zasieg(segs) for segs in cs.allsegs]
 
-    # Etykiety KSZTAŁTEM I POŁOŻENIEM DOPASOWANE DO PRZEBIEGU KONTURU - ta sama
-    # metoda co w kde_martwe_drewno.py: każdy znak jest osobno pozycjonowany
-    # i obracany wzdłuż wyciętego fragmentu linii konturu (TekstWzdlugKonturu
-    # w kde_common.py), więc napis "podąża" za krzywizną granicy zasięgu
-    # zamiast przecinać ją pod przypadkowym kątem.
-    #
-    # Etykieta linii jest PROGOWA ("> 5%"), a nie przedziałowa jak w legendzie -
-    # linia wyznacza właśnie przekroczenie progu, więc to jest tu poprawny opis.
-    #
-    # Punkt kotwiczący dla progu N trafia w PIERŚCIEŃ tego pasma (obszar
-    # >= prog_N, ale poza zagnieżdżonym obszarem >= prog_N+1) - inaczej punkty
-    # zagnieżdżonych progów zbiegałyby się w tym samym, najbardziej wewnętrznym
-    # miejscu i etykiety nakładałyby się na siebie. Kandydatów filtrujemy po
-    # odległości od granicy Polski, żeby napis nie wyglądał jak opis granicy
-    # kraju.
-    MIN_POWIERZCHNIA_ETYKIETY = 3e8  # m^2 (300 km^2) - nie etykietujemy znikomych strzępków zakresu
-    BORDER_TOL_ETYKIETY = 15_000  # m - punkt kotwiczący musi leżeć dalej od granicy Polski niż to
-    MIN_ODSTEP_ETYKIET = 150_000  # m - minimalny odstęp między powtórzeniami etykiety tego samego pasma
-    kandydaci_etykiet = []
-    for i, prog in enumerate(progi_udzialu):
-        geom = zasiegi_geom[i]
-        if i + 1 < len(zasiegi_geom):
-            geom = geom.difference(zasiegi_geom[i + 1])
-        if geom.is_empty:
-            continue
-        czesci = [g for g in getattr(geom, 'geoms', [geom]) if isinstance(g, Polygon)]
-        for czesc in czesci:
-            if czesc.is_empty or czesc.area < MIN_POWIERZCHNIA_ETYKIETY:
-                continue
-            wierzcholki = np.array(czesc.exterior.coords)
-            odleglosc_od_granicy = shapely.distance(shapely.points(wierzcholki), granica_polski)
-            maska_daleko = odleglosc_od_granicy > BORDER_TOL_ETYKIETY
-            if not maska_daleko.any():
-                continue
-            idx_wg_odleglosci = np.argsort(-np.where(maska_daleko, odleglosc_od_granicy, -np.inf))
-            wybrane_idx = []
-            for idx in idx_wg_odleglosci:
-                if not maska_daleko[idx]:
-                    break
-                if all(
-                    np.linalg.norm(wierzcholki[idx] - wierzcholki[w]) >= MIN_ODSTEP_ETYKIET
-                    for w in wybrane_idx
-                ):
-                    wybrane_idx.append(int(idx))
-            for idx in wybrane_idx:
-                kandydaci_etykiet.append((prog, wierzcholki, idx))
-
-    if kandydaci_etykiet:
-        # Wymuszamy jednorazowe rysowanie figury, żeby mieć działający
-        # `renderer` - potrzebny do zmierzenia FAKTYCZNEJ szerokości znaków
-        # etykiety, zanim wytniemy pod nie fragment linii konturu.
-        fig.canvas.draw()
-        renderer = fig.canvas.get_renderer()
-        for prog, wierzcholki, idx_najdalszy in kandydaci_etykiet:
-            tekst = f"> {prog:.0%}"
-            dlugosc = dlugosc_tekstu_w_danych(ax, tekst, fontsize=6, renderer=renderer)
-            fragment = wytnij_fragment_konturu(wierzcholki, idx_najdalszy, dlugosc)
-            if len(fragment) < 2:
-                continue
-            etykieta = TekstWzdlugKonturu(
-                fragment[:, 0], fragment[:, 1], tekst, ax,
-                fontsize=6, color='#0d3b10',
-            )
-            etykieta.set_path_effects([patheffects.withStroke(linewidth=2.5, foreground='white')])
+    # Etykiety progów wzdłuż wszystkich pętli konturu (także zamkniętych
+    # wokół obszarów poniżej progu) - szczegóły w kde_common.etykietuj_kontury.
+    etykietuj_kontury(ax, progi_udzialu, zasiegi_geom, granica_polski,
+                      lambda p: f"> {p:.0%}", kolor='#0d3b10')
 
     gdf_model.plot(ax=ax, color='gray', markersize=3, alpha=0.3)
     gdf_model[maska_gat].plot(ax=ax, color='red', markersize=6, alpha=0.5)
