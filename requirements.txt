@@ -1,15 +1,23 @@
+# Portal (1_portal_mapowy_wisl.py, portal_*.py)
 folium
-geopandas
-pandas
 branca
+jinja2
 altair
+geopandas
+shapely
+pandas
+numpy
+
+# Baza WISL (SQL Server, sterownik ODBC Driver 17 for SQL Server w systemie;
+# hasło w zmiennej środowiskowej WISL_DB_PASSWORD - patrz WislDbCon.py)
 sqlmodel
 pyodbc
-numpy
-plotly
-pyproj
-shapely
+
+# Mapy KDE (kde_*.py)
 scipy
 matplotlib
-contextily
 matplotlib_map_utils
+rasterio          # podkład map PNG z data/europa.tif (kde_common.dodaj_podklad)
+
+# kde_uszkodzenia_sparr.py wywołuje R (Rscript, ścieżka RSCRIPT_PATH w skrypcie)
+# z pakietami: sf, spatstat, sparr (policz_ryzyko.R) - instalowane w R, nie pip.

@@ -6,3 +6,8 @@ __pycache__
 
 # raporty WISL (PDF, ~665 MB) - pobierane z bdl.lasy.gov.pl, poza repozytorium
 raporty_wisl/
+
+# wyniki skryptów kde_* (mapy PNG, GeoJSON, pliki pośrednie dla R) -
+# generowane, duże i zmieniane przy każdym przeliczeniu; KDE_temp zawiera
+# współrzędne traktów
+KDE_*/
