@@ -1,6 +1,8 @@
 import folium
 from folium.plugins import MiniMap, Search
 from folium import Element
+from branca.element import MacroElement
+from jinja2 import Template
 import geopandas as gpd
 import shapely
 from pathlib import Path
@@ -79,24 +81,52 @@ osm = folium.TileLayer(
     min_zoom=6,
 ).add_to(m)
 
-# Ortofotomapa
+# Ortofotomapa GUGiK (geoportal.gov.pl), WMTS w standardowej rozdzielczości.
+# Zamiast Esri World Imagery: warunki Esri wymagają oprogramowania Esri albo
+# subskrypcji ArcGIS. Usługa GUGiK jest bezpłatna ("Brak ograniczeń
+# w publicznym dostępie"; korzystanie = akceptacja regulaminu Geoportalu).
+# Siatka EPSG:3857 usługi to standardowa siatka web mercator (ten sam
+# narożnik i skale), więc {z}/{x}/{y} Leafleta idą wprost do TILEMATRIX /
+# TILECOL / TILEROW. WMS StandardResolution odpowiadał w testach (2026-10-09)
+# głównie błędem 404, a HighResolution ma luki w pokryciu kraju.
 ortofoto = folium.TileLayer(
-    tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attr='Esri',
+    tiles=('https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMTS/StandardResolution'
+           '?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTOFOTOMAPA&STYLE=default'
+           '&FORMAT=image/jpeg&TILEMATRIXSET=EPSG:3857&TILEMATRIX=EPSG:3857:{z}'
+           '&TILEROW={y}&TILECOL={x}'),
+    attr='Ortofotomapa &copy; <a href="https://www.geoportal.gov.pl">GUGiK</a>',
     name='Ortofotomapa',
     overlay=False,
     max_zoom=max_zoom,
     min_zoom=6,
 ).add_to(m)
 
-etykiety = folium.TileLayer(
-    tiles='https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
-    attr='Esri',
-    name='Etykiety na ortofotomapie',
-    overlay=True,
-    max_zoom=max_zoom,
-    min_zoom=6,
-).add_to(m)
+
+class PonowKafelki(MacroElement):
+    """Serwer GUGiK odrzuca czasem pojedyncze żądania (w testach 3 z 20
+    kafelków; te same adresy chwilę później zwracały 200) - kafelek z błędem
+    jest pobierany ponownie, do 3 razy, z rosnącą przerwą.
+    Znane ograniczenie usługi (2026-10-09, zostawione świadomie): WMTS
+    w siatce EPSG:3857 odrzuca rzędy powyżej ok. 54,9°N ("TileOutOfRange"),
+    więc ortofotomapa jest ucięta na pasie wybrzeża (Łeba-Rozewie)."""
+    _template = Template("""
+{% macro script(this, kwargs) %}
+{{ this._parent.get_name() }}.on('tileerror', function(e) {
+    var img = e.tile, proba = (img._proba || 0) + 1;
+    if (proba > 3) return;
+    img._proba = proba;
+    setTimeout(function() {
+        img.src = img.src.replace(/&_proba=\\d+$/, '') + '&_proba=' + proba;
+    }, 500 * proba);
+});
+{% endmacro %}
+""")
+
+
+ortofoto.add_child(PonowKafelki())
+
+# Nakładki z etykietami Esri (World_Boundaries_and_Places) już nie ma -
+# warunki Esri jak przy ortofotomapie (2026-10-09).
 
 # Logo WISL
 logo_html = '''
@@ -167,9 +197,8 @@ dodaj_panel_warstw(
     granice_krainy=krainy,
     granice_wojewodztwa=wojewodztwa,
     podklady=[('OpenStreetMap', osm), ('Ortofotomapa', ortofoto)],
-    nakladki=[('Etykiety', etykiety, True),
-              ('Nadleśnictwa', nadlgeo, True)],
-    podklad_poczatkowy=1,
+    nakladki=[('Nadleśnictwa', nadlgeo, True)],
+    podklad_poczatkowy=0,   # OpenStreetMap
 )
 
 dodaj_panel_kde(m, output_dir)

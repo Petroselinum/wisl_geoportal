@@ -297,7 +297,7 @@ class PanelWarstw(MacroElement):
     var PODSWIETLENIE = { fillColor: 'yellow', fillOpacity: 0.5, weight: 1 };
     var aktywny = function(j) { return j === stan.podzial && stan.wskaznik; };
 
-    // --- Podkład: dokładnie jeden; etykiety zawsze nad podkładem ---------
+    // --- Podkład: dokładnie jeden; nakładki zawsze nad podkładem ---------
     podklady.forEach(function(p) { p.warstwa.setZIndex(0); });
     function ustawPodklad(i) {
         podklady.forEach(function(p, j) {
