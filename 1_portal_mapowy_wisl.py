@@ -204,7 +204,25 @@ dodaj_panel_warstw(
 
 dodaj_panel_kde(m, output_dir)
 
-m.add_child(folium.LatLngPopup())
+class Wspolrzedne(MacroElement):
+    """Kliknięcie w mapę (poza jednostkami z popupem) pokazuje współrzędne -
+    jak folium.LatLngPopup, ale po polsku i z przecinkiem dziesiętnym."""
+    _template = Template("""
+{% macro script(this, kwargs) %}
+(function() {
+    var popup = L.popup();
+    var st = function(v) { return v.toFixed(4).replace('.', ',') + '°'; };
+    {{ this._parent.get_name() }}.on('click', function(e) {
+        popup.setLatLng(e.latlng)
+             .setContent('Szerokość: ' + st(e.latlng.lat) + '<br>Długość: ' + st(e.latlng.lng))
+             .openOn({{ this._parent.get_name() }});
+    });
+})();
+{% endmacro %}
+""")
+
+
+m.add_child(Wspolrzedne())
 
 #Minimapa nawigacyjna
 MiniMap(position="topleft",

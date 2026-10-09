@@ -13,6 +13,12 @@ from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
 from kde_common import (
     dodaj_podklad,
+    efektywna_liczba_traktow_siatka,
+    odetnij_malo_traktow,
+    dodaj_przypis,
+    PRZYPIS_ODCIECIA,
+    oznacz_niska_wiarygodnosc,
+    zapisz_wiarygodnosc,
     wymus_wspolne_pasmo,
     kontur_na_zasieg,
     etykietuj_kontury,
@@ -81,20 +87,19 @@ KOLORY_PROGOW_M3HA = {
     20: plt.cm.YlOrBr(0.92),
 }
 
-# Rodzaje martwego drewna wg DRZEWA_MARTWE.TYP (słownik SL_TYP / SL_OBL_TYP):
-# 1 ścięcie, 2 wywrócenie, 3 złamanie (drewno LEŻĄCE), 4 stojący posusz,
-# 5 stojący złom (drewno STOJĄCE), 6 inny (tylko II cykl, 0,03 m3/ha - wchodzi
-# wyłącznie do sumy wszystkich typów). Drzewa stojące = posusz + złomy stojące,
-# tak jak OBL_ADRES_POW.ZAS_MARTW_1 (sprawdzone: 4,26 / 5,34 m3/ha w III / IV
-# cyklu, dokładnie suma typów 4 i 5). W I cyklu (2005-2009) mierzono tylko
-# drewno leżące - mapy drewna stojącego dla tego okresu nie ma.
+# Rodzaje martwego drewna - kolumny Wisl_quert.martwe_drewno (gęstości
+# podpowierzchni z OBL_ADRES_POW): leżące = ZAS_MARTW_L (od III cyklu typy
+# 1-3: ścięte, wywrócone, złamane), stojące = posusz + złomy stojące
+# (ZAS_MARTW_1 + ZAS_MARTW_2, od III cyklu typy 4-5). Wszystkie cykle - także
+# I, w którym posusz zapisywano wśród drzew > 7 cm (kod uszkodzenia 50),
+# a złomy razem z częścią leżącą (szczegóły w Wisl_quert.martwe_drewno).
 RODZAJE_MARTWEGO_DREWNA = {
-    'lezace': {'nazwa': 'leżące', 'typy': (1, 2, 3)},
-    'stojace': {'nazwa': 'stojące', 'typy': (4, 5)},
+    'lezace': {'nazwa': 'leżące', 'kolumna': 'SR_LEZACE'},
+    'stojace': {'nazwa': 'stojące', 'kolumna': 'SR_STOJACE'},
 }
 
 
-def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | None = None, progi: list[float] = PROGI_ZASOBNOSCI_M3HA,
+def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, progi: list[float] = PROGI_ZASOBNOSCI_M3HA,
                        rodzaj: str | None = None):
     """
     Lokalna, wygładzona przestrzennie średnia zasobność martwego drewna
@@ -104,22 +109,12 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
     rok_start, rok_end - zakres lat wykonania pomiaru (ADRES_POW.DATA), nie
         numer formalnego cyklu WISL (patrz Wisl_quert.CYKLE_LATA).
 
-    Wisl_quert.martwe_drewno(rok_start, rok_end) zwraca dane per trakt i per
-    TYP martwego drewna (1-3 leżące, 4 posusz, 5 złom — patrz dokumentacja
-    WISL), już podzielone przez SUMA_WSP_Z traktu (SR_MIAZSZOSC to
-    gotowa średnia ważona na poziomie podpowierzchni, zagregowana do
-    traktu) — ale SUMA_WSP_Z jest też zwracane osobno, bo potrzebujemy
-    go jako wagi reprezentatywności do przestrzennego wygładzania KDE,
-    niezależnie od tego, że posłużyło już do policzenia SR_MIAZSZOSC.
+    Wisl_quert.martwe_drewno(rok_start, rok_end) zwraca na trakt średnie
+    ważone WSP_Z (SR_LEZACE, SR_STOJACE, SR_RAZEM) i SUMA_WSP_Z - tę samą
+    sumę jako wagę reprezentatywności do przestrzennego wygładzania KDE.
 
-    typ: opcjonalny filtr konkretnego typu martwego drewna (int).
-        None = suma wszystkich typów na trakt (ten sam mianownik
-        SUMA_WSP_Z obowiązuje dla każdego typu w danym trakcie, więc
-        sumowanie SR_MIAZSZOSC po typach jest poprawne matematycznie).
-
-    rodzaj: 'lezace' (typy 1-3) albo 'stojace' (typy 4-5, posusz i złomy
-        stojące) - patrz RODZAJE_MARTWEGO_DREWNA. Nie łączyć z `typ`.
-        None = bez podziału na rodzaje.
+    rodzaj: 'lezace' albo 'stojace' (posusz i złomy stojące) - patrz
+        RODZAJE_MARTWEGO_DREWNA. None = całe martwe drewno.
 
     progi: lista stałych progów zasobności (m3/ha) do zaznaczenia jako
         osobne zakresy na mapie. Progi poza zakresem danych cyklu (>= max)
@@ -128,42 +123,29 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
         porównywalne wizualnie.
     """
     okres = f"{rok_start}-{rok_end}"
-    if rodzaj is not None and (rodzaj not in RODZAJE_MARTWEGO_DREWNA or typ is not None):
-        raise ValueError(f"rodzaj: {list(RODZAJE_MARTWEGO_DREWNA)} (bez jednoczesnego `typ`)")
+    if rodzaj is not None and rodzaj not in RODZAJE_MARTWEGO_DREWNA:
+        raise ValueError(f"rodzaj: {list(RODZAJE_MARTWEGO_DREWNA)}")
     nazwa_rodzaju = RODZAJE_MARTWEGO_DREWNA[rodzaj]['nazwa'] if rodzaj else None
     res = martwe_drewno(rok_start=rok_start, rok_end=rok_end)
     if not res:
         print(f"Brak danych z bazy dla lat {okres}.")
         return
 
-    df = pd.DataFrame(res, columns=['NR_TRAKTU', 'TYP', 'SR_MIAZSZOSC', 'SUMA_WSP_Z'])
+    df = pd.DataFrame(res, columns=['NR_TRAKTU', 'SR_LEZACE', 'SR_STOJACE', 'SR_RAZEM', 'SUMA_WSP_Z'])
 
     if df.empty:
         print(f"Brak danych dla lat {okres}.")
         return
 
-    # Pełna populacja (tło) — KAŻDY trakt z z_pow_les pojawia się co najmniej
-    # raz dzięki LEFT JOIN w zapytaniu SQL (trakty bez martwego drewna mają
-    # TYP=NULL, SR_MIAZSZOSC=0). Bierzemy ją NIEZALEŻNIE od filtra `typ`,
-    # żeby zawężenie do jednego typu nie zmniejszało populacji odniesienia.
-    tlo_trakty = df.groupby('NR_TRAKTU', as_index=False)['SUMA_WSP_Z'].first()
-
-    # Licznik: zasobność wybranego typu (albo suma wszystkich typów, gdy
-    # typ=None — wiersze placeholder z SR_MIAZSZOSC=0 nic tu nie zmieniają).
-    if rodzaj is not None:
-        df_f = df[df['TYP'].isin(RODZAJE_MARTWEGO_DREWNA[rodzaj]['typy'])]
-    else:
-        df_f = df[df['TYP'] == typ] if typ is not None else df
-    if not (df_f['SR_MIAZSZOSC'] > 0).any():
-        print(f"Lata {okres}: brak martwego drewna wybranego rodzaju/typu w danych - pomijam mapę"
-              + (" (w I cyklu WISL nie mierzono drzew martwych stojących)." if rodzaj == 'stojace' else "."))
+    # Każdy trakt populacji (tło) jest w wyniku raz - trakty bez martwego
+    # drewna wybranego rodzaju mają 0 i poprawnie obniżają lokalną średnią.
+    kolumna = RODZAJE_MARTWEGO_DREWNA[rodzaj]['kolumna'] if rodzaj else 'SR_RAZEM'
+    df_trakt = df[['NR_TRAKTU', 'SUMA_WSP_Z']].copy()
+    df_trakt['SR_MIAZSZOSC'] = df[kolumna].astype(float)
+    df_trakt['SUMA_WSP_Z'] = df_trakt['SUMA_WSP_Z'].astype(float)
+    if not (df_trakt['SR_MIAZSZOSC'] > 0).any():
+        print(f"Lata {okres}: brak martwego drewna wybranego rodzaju w danych - pomijam mapę.")
         return
-    zasobnosc_trakty = df_f.groupby('NR_TRAKTU', as_index=False)['SR_MIAZSZOSC'].sum()
-
-    # Złączenie: trakty bez wybranego typu (ale obecne w populacji) dostają 0,
-    # zamiast znikać z analizy.
-    df_trakt = tlo_trakty.merge(zasobnosc_trakty, on='NR_TRAKTU', how='left')
-    df_trakt['SR_MIAZSZOSC'] = df_trakt['SR_MIAZSZOSC'].fillna(0.0)
     df_trakt['NR_TRAKTU'] = df_trakt['NR_TRAKTU'].astype(int).astype(str)
 
     trakty = gpd.read_file('data/trakty_wsp.geojson')
@@ -242,6 +224,11 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
         srednia_zasobnosc = (f_est / g_est) * wspolczynnik_korekty_skali
 
     srednia_zasobnosc[mask_niskie_tlo] = np.nan
+    # Efektywna liczba traktów tła (kde_common): gdzie wynik opierałby się
+    # na efektywnie < MIN_TRAKTOW_DO_MAPY traktach, mapy nie ma - przed
+    # maksimum i progami; do MIN_EFEKTYWNYCH_TRAKTOW kreskowanie niżej.
+    n_eff = efektywna_liczba_traktow_siatka(coords, waga_tlo, kernel_tlo, X, Y, wartosc=srednia_zasobnosc)
+    odcieto = odetnij_malo_traktow(srednia_zasobnosc, n_eff)
     wartosci_valid = srednia_zasobnosc[~np.isnan(srednia_zasobnosc)]
 
     if wartosci_valid.size == 0:
@@ -304,6 +291,10 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
     etykietuj_kontury(ax, progi_zasobnosci, zasiegi_geom, granica_polski,
                       lambda p: f"> {p:.0f} m³/ha", kolor='#3d2400')
 
+    # Obszary, gdzie wynik opiera się na małej liczbie traktów - kreskowane
+    # (efektywna liczba traktów tła, kde_common.oznacz_niska_wiarygodnosc)
+    obszar_malo, uchwyt_malo = oznacz_niska_wiarygodnosc(ax, X, Y, n_eff)
+
     gdf_model.plot(ax=ax, color='gray', markersize=3, alpha=0.3)
     gdf_model[gdf_model['SR_MIAZSZOSC'] > 0].plot(ax=ax, color='orange', markersize=6, alpha=0.35)
     poland.boundary.plot(ax=ax, color='black', linewidth=1)
@@ -365,6 +356,8 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
     # Legenda WYNIESIONA poza obszar mapy (po prawej stronie osi), żeby nie
     # zasłaniać terytorium Polski - wcześniejsze 'lower left' wewnątrz osi
     # nakładało się na południowo-zachodni skrawek kraju.
+    if uchwyt_malo is not None:
+        legend_elements.insert(sum(isinstance(h, mpatches.Patch) for h in legend_elements), uchwyt_malo)
     ax.legend(
         handles=legend_elements, loc='center left', bbox_to_anchor=(1.01, 0.5),
         frameon=True, facecolor='white', fontsize=9, title="Legenda", title_fontsize=10,
@@ -381,7 +374,7 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
             {
                 'rok_start': rok_start,
                 'rok_end': rok_end,
-                'typ_martwego_drewna': typ if typ is not None else 'wszystkie',
+                'typ_martwego_drewna': 'wszystkie',
                 'rodzaj_martwego_drewna': rodzaj or 'wszystkie',
                 'prog_zasobnosci_m3ha': prog,
                 # Średnia WAŻONA POWIERZCHNIĄ (suma objętości / suma
@@ -400,13 +393,16 @@ def martwe_drewno_mapa(rok_start: int = 2020, rok_end: int = 2025, typ: int | No
         crs=CRS_OBLICZENIOWY,
     )
 
-    sufiks_typ = f"_typ{typ}" if typ is not None else (f"_{rodzaj}" if rodzaj else "")
+    sufiks_rodzaj = f"_{rodzaj}" if rodzaj else ""
     sufiks_prog = "_".join(str(int(p)) for p in progi_zasobnosci)
-    file_prefix = f"martwe_drewno_{okres}{sufiks_typ}_prog{sufiks_prog}"
+    file_prefix = f"martwe_drewno_{okres}{sufiks_rodzaj}_prog{sufiks_prog}"
 
     gdf_zasieg.to_crs(CRS_ZAPISU).to_file(
         f"KDE_martwe_drewno/{file_prefix}.geojson", driver="GeoJSON"
     )
+    zapisz_wiarygodnosc(obszar_malo, f"KDE_martwe_drewno/{file_prefix}.geojson", CRS_OBLICZENIOWY, CRS_ZAPISU)
+    if odcieto:
+        dodaj_przypis(ax, PRZYPIS_ODCIECIA)
     fig.savefig(f"KDE_martwe_drewno/{file_prefix}.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Zakończono pomyślnie. Zapisano wyniki dla lat {okres}.")

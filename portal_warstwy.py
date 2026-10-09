@@ -59,6 +59,13 @@ WSKAZNIKI = [
     {'id': 'martwe', 'nazwa': 'Martwe drewno', 'jednostka': 'm³/ha',
      'opis': 'Przeciętna miąższość martwego drewna (stojącego i leżącego).',
      'paleta': 'YlOrBr'},
+    # z data.UZYTKOWANIE_OKNA (tab. 105a.x) - okna 2015-2019 i 2020-2024 to
+    # te same lata co cykle III i IV; raport 2010-2014 podaje użytkowanie
+    # tylko wg form własności, wcześniejsze wcale
+    {'id': 'uzytkowanie', 'nazwa': 'Użytkowanie', 'jednostka': 'm³/ha',
+     'opis': 'Użytkowanie rębne i przedrębne grubizny w okresie 5-letnim (suma '
+             'z 5 lat, nie wartość roczna), na 1 ha powierzchni z początku okresu.',
+     'paleta': 'PuRd'},
 ]
 
 
@@ -98,6 +105,13 @@ def _klasy(wyniki):
                           'kolory': [to_hex(cmap(0.2 + 0.75 * i / max(n - 1, 1)))
                                      for i in range(n)]}
     return klasy
+
+
+def _z_uzytkowaniem(wyniki, okna):
+    """Kopia wyników cykli (data.WISL_*) z dopisanym użytkowaniem z okien
+    5-letnich (data.UZYTKOWANIE_OKNA[...]) o tych samych latach co cykl."""
+    return {okres: ({**dane, 'uzytkowanie': okna[okres]} if okres in okna else dane)
+            for okres, dane in wyniki.items()}
 
 
 def _tabela_wynikow(wyniki, nazwy):
@@ -625,8 +639,8 @@ def dodaj_panel_warstw(mapa, granice_rdlp, granice_krainy, granice_wojewodztwa,
             'zakres': 'Dane dotyczą lasów w zarządzie PGL LP.',
             'ogolem_etykieta': 'PGL LP ogółem',
             'granice': _granice(granice_rdlp, 'NAZWA', lambda r: f"RDLP {r['NAZWA']}"),
-            'wyniki': _tabela_wynikow(WISL_RDLP, RDLP),
-            'klasy': _klasy(WISL_RDLP),
+            'wyniki': _tabela_wynikow(_z_uzytkowaniem(WISL_RDLP, UZYTKOWANIE_OKNA['rdlp']), RDLP),
+            'klasy': _klasy(_z_uzytkowaniem(WISL_RDLP, UZYTKOWANIE_OKNA['rdlp'])),
             'serie': _serie({'zasobnosc': _zasobnosc_rdlp(), 'martwe': MARTWE_OKNA['rdlp'],
                              'przyrost': PRZYROST_OKNA['rdlp'],
                              'uzytkowanie': UZYTKOWANIE_OKNA['rdlp']}, RDLP),
@@ -639,8 +653,8 @@ def dodaj_panel_warstw(mapa, granice_rdlp, granice_krainy, granice_wojewodztwa,
             'ogolem_etykieta': 'Polska ogółem',
             'granice': _granice(granice_wojewodztwa, 'JPT_NAZWA_',
                                 lambda r: f"Województwo {r['JPT_NAZWA_']}"),
-            'wyniki': _tabela_wynikow(WISL_WOJEWODZTWA, WOJEWODZTWA),
-            'klasy': _klasy(WISL_WOJEWODZTWA),
+            'wyniki': _tabela_wynikow(_z_uzytkowaniem(WISL_WOJEWODZTWA, UZYTKOWANIE_OKNA['wojewodztwa']), WOJEWODZTWA),
+            'klasy': _klasy(_z_uzytkowaniem(WISL_WOJEWODZTWA, UZYTKOWANIE_OKNA['wojewodztwa'])),
             'serie': _serie({'zasobnosc': ZASOBNOSC_OKNA_WOJEWODZTWA,
                              'martwe': MARTWE_OKNA['wojewodztwa'],
                              'przyrost': PRZYROST_OKNA['wojewodztwa'],
@@ -654,8 +668,8 @@ def dodaj_panel_warstw(mapa, granice_rdlp, granice_krainy, granice_wojewodztwa,
             'ogolem_etykieta': 'Polska ogółem',
             'granice': _granice(granice_krainy, 'Nazwa',
                                 lambda r: f"Kraina {r['Nazwa']} ({r['Kraina']})"),
-            'wyniki': _tabela_wynikow(WISL_KRAINY, KRAINY),
-            'klasy': _klasy(WISL_KRAINY),
+            'wyniki': _tabela_wynikow(_z_uzytkowaniem(WISL_KRAINY, UZYTKOWANIE_OKNA['krainy']), KRAINY),
+            'klasy': _klasy(_z_uzytkowaniem(WISL_KRAINY, UZYTKOWANIE_OKNA['krainy'])),
             'serie': _serie({'zasobnosc': ZASOBNOSC_OKNA_KRAINY, 'martwe': MARTWE_OKNA['krainy'],
                              'przyrost': PRZYROST_OKNA['krainy'],
                              'uzytkowanie': UZYTKOWANIE_OKNA['krainy']}, KRAINY),

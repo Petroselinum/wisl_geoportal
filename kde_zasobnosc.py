@@ -12,6 +12,12 @@ from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
 from kde_common import (
     dodaj_podklad,
+    efektywna_liczba_traktow_siatka,
+    odetnij_malo_traktow,
+    dodaj_przypis,
+    PRZYPIS_ODCIECIA,
+    oznacz_niska_wiarygodnosc,
+    zapisz_wiarygodnosc,
     wymus_wspolne_pasmo,
     kontur_na_zasieg,
     etykietuj_kontury,
@@ -209,6 +215,11 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
         zasobnosc = (f_est / g_est) * srednia_krajowa
 
     zasobnosc[mask_niskie_tlo] = np.nan
+    # Efektywna liczba traktów tła (kde_common): gdzie wynik opierałby się
+    # na efektywnie < MIN_TRAKTOW_DO_MAPY traktach, mapy nie ma - przed
+    # maksimum i progami; do MIN_EFEKTYWNYCH_TRAKTOW kreskowanie niżej.
+    n_eff = efektywna_liczba_traktow_siatka(coords, waga_tlo, kernel_tlo, X, Y, wartosc=zasobnosc)
+    odcieto = odetnij_malo_traktow(zasobnosc, n_eff)
     wartosci_valid = zasobnosc[~np.isnan(zasobnosc)]
 
     if wartosci_valid.size == 0:
@@ -266,6 +277,10 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
     etykietuj_kontury(ax, progi_zasobnosci, zasiegi_geom, granica_polski,
                       lambda p: f"> {p:.0f} m³/ha", kolor='black')
 
+    # Obszary, gdzie wynik opiera się na małej liczbie traktów - kreskowane
+    # (efektywna liczba traktów tła, kde_common.oznacz_niska_wiarygodnosc)
+    obszar_malo, uchwyt_malo = oznacz_niska_wiarygodnosc(ax, X, Y, n_eff)
+
     gdf_model.plot(ax=ax, color='gray', markersize=3, alpha=0.3)
     poland.boundary.plot(ax=ax, color='black', linewidth=1)
 
@@ -317,6 +332,8 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
                       label='Trakt badany (tło)'),
         mlines.Line2D([], [], color='black', linewidth=1, label='Granica Polski'),
     ]
+    if uchwyt_malo is not None:
+        legend_elements.insert(sum(isinstance(h, mpatches.Patch) for h in legend_elements), uchwyt_malo)
     ax.legend(
         handles=legend_elements, loc='center left', bbox_to_anchor=(1.01, 0.5),
         frameon=True, facecolor='white', fontsize=9, title="Legenda", title_fontsize=10,
@@ -354,6 +371,9 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
     gdf_zasieg.to_crs(CRS_ZAPISU).to_file(
         f"KDE_zasobnosc/{file_prefix}.geojson", driver="GeoJSON"
     )
+    zapisz_wiarygodnosc(obszar_malo, f"KDE_zasobnosc/{file_prefix}.geojson", CRS_OBLICZENIOWY, CRS_ZAPISU)
+    if odcieto:
+        dodaj_przypis(ax, PRZYPIS_ODCIECIA)
     fig.savefig(f"KDE_zasobnosc/{file_prefix}.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Zakończono pomyślnie. Zapisano wyniki dla lat {okres} ({opis}).")

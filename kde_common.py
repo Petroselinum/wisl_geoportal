@@ -4,6 +4,8 @@ from matplotlib import patheffects
 import shapely
 from shapely.geometry import Polygon
 from scipy.signal import fftconvolve
+from scipy.stats import gaussian_kde
+from matplotlib import patches as mpatches
 import rasterio
 from rasterio.transform import from_bounds
 from rasterio.warp import reproject, Resampling
@@ -409,3 +411,141 @@ def dodaj_podklad(ax, crs, szary=True, rozjasnienie=0.65, rozdzielczosc_px=2500,
     if podpis:
         ax.text(0.005, 0.005, podpis, transform=ax.transAxes, fontsize=6,
                 color='#333333', ha='left', va='bottom', zorder=10)
+
+
+# Wiarygodność modelu: obszary, w których lokalny wynik opiera się na małej
+# liczbie traktów, są kreskowane na mapach PNG i zapisywane osobno
+# (KDE_*/wiarygodnosc/<nazwa>.geojson) dla portalu. Miarą jest efektywna
+# liczba traktów tła n_eff - ile traktów faktycznie decyduje o wyniku w danym
+# miejscu przy tych samych wagach i paśmie co KDE tła (2026-10-09: przy
+# mapach ze wszystkich traktów n_eff >= 92 w każdym miejscu, przy tle jednego
+# gatunku, np. jodły, poniżej 30 na 45% obszaru). Ograniczenie: n_eff mówi
+# o liczbie traktów TŁA, nie o rzadkości zjawiska w liczniku (np. jedna
+# przyczyna uszkodzeń) - tego miara nie obejmuje.
+MIN_EFEKTYWNYCH_TRAKTOW = 30
+# Poniżej MIN_TRAKTOW_DO_MAPY wyniku w ogóle nie ma (decyzja użytkownika
+# 2026-10-09, jak min. 10 traktów w obszarze sparr): przy n_eff < 10 przedział
+# ufności udziału ~30% to ok. +-28 punktów, czyli kilka pasm naraz - np. pasma
+# "> 50%" uszkodzeń jodły 2020-2025 w Sudetach i na Roztoczu opierały się na
+# 3-5 traktach. Między 10 a 30 - wynik z kreskowaniem.
+MIN_TRAKTOW_DO_MAPY = 10
+PRZYPIS_ODCIECIA = (f"Bez koloru tam, gdzie wynik opierałby się na efektywnie mniej niż "
+                    f"{MIN_TRAKTOW_DO_MAPY} traktach.")
+
+
+def odetnij_malo_traktow(wartosc, n_eff, minimum=MIN_TRAKTOW_DO_MAPY):
+    """NaN w `wartosc` i `n_eff` (w miejscu) tam, gdzie n_eff < minimum.
+    Wołać PRZED wyznaczeniem maksimum i progów mapy. Zwraca True, gdy coś
+    odcięto (wtedy pod mapą PRZYPIS_ODCIECIA)."""
+    odciete = np.isfinite(n_eff) & (n_eff < minimum)
+    wartosc[odciete] = np.nan
+    n_eff[odciete] = np.nan
+    return bool(odciete.any())
+
+
+def dodaj_przypis(ax, tekst, szerokosc=120):
+    """Uwaga pod mapą, pod opisem osi X (jak adnotacje kde_uszkodzenia_sparr.py)."""
+    import textwrap
+    ax.annotate("\n".join(textwrap.wrap(tekst, szerokosc)), xy=(0, 0), xycoords="axes fraction",
+                xytext=(0, -40), textcoords="offset points", fontsize=8, color="#555555",
+                va="top", ha="left", annotation_clip=False)
+
+
+def efektywna_liczba_traktow(coords, wagi, kernel_tla, positions, g_tla=None):
+    """
+    n_eff(x) = (sum w_i K_i(x))^2 / sum (w_i K_i(x))^2 na punktach `positions`,
+    K - jądro Gaussa z kowariancją kernel_tla.covariance (to samo pasmo co tło).
+    Liczone analitycznie: K^2 to jądro o kowariancji Sigma/2 przemnożone przez
+    1 / (4 pi sqrt|Sigma|), więc mianownik to drugie KDE (wagi w^2, Sigma/2).
+    Sprawdzone 2026-10-09 względem sumowania wprost (różnica ~1e-15).
+    kernel_tla - KDE tła z TYMI SAMYMI wagami `wagi`; g_tla - jego wartości
+    w `positions`, jeśli już policzone (oszczędza jedną ewaluację KDE).
+    """
+    wagi = np.asarray(wagi, dtype=float)
+    cov = kernel_tla.covariance
+    k2 = gaussian_kde(coords, weights=wagi ** 2)
+    k2.covariance = cov / 2
+    k2.cho_cov = np.linalg.cholesky(cov / 2)
+    k2.log_det = 2 * np.log(np.diag(k2.cho_cov * np.sqrt(2 * np.pi))).sum()
+    g1 = kernel_tla(positions) if g_tla is None else np.asarray(g_tla).ravel()
+    g2 = k2(positions)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return (4 * np.pi * np.sqrt(np.linalg.det(cov)) * wagi.sum() ** 2 / (wagi ** 2).sum()
+                * g1 ** 2 / g2)
+
+
+def oznacz_niska_wiarygodnosc(ax, X, Y, n_eff, prog=MIN_EFEKTYWNYCH_TRAKTOW):
+    """
+    Kreskuje obszar n_eff < prog (n_eff = NaN poza obszarem z wartościami
+    mapy - tam nic nie rysuje). Zwraca (wielokąt obszaru w układzie osi albo
+    None, uchwyt do legendy albo None).
+    """
+    n = np.asarray(n_eff, dtype=float).reshape(X.shape)
+    if not np.any(n < prog):
+        return None, None
+    kreski = ax.contourf(X, Y, np.where(n < prog, 1.0, np.nan), levels=[0.5, 1.5],
+                         colors='none', hatches=['////'], zorder=3)
+    kreski.set_edgecolor((0.25, 0.25, 0.25, 0.55))
+    kreski.set_linewidth(0)
+    # wielokąt obszaru: kontur (prog - n_eff) >= 0, NaN poza mapą jako -1 -
+    # pętle zamknięte jak w pozostałych konturach (kontur_na_zasieg)
+    pomocniczy = ax.contour(X, Y, np.nan_to_num(prog - n, nan=-1.0), levels=[0.0],
+                            linewidths=0)
+    obszar = kontur_na_zasieg(pomocniczy.allsegs[0])
+    pomocniczy.remove()
+    uchwyt = mpatches.Patch(facecolor='none', edgecolor=(0.25, 0.25, 0.25, 0.8), hatch='////',
+                            label=f'Mało traktów (efektywnie {MIN_TRAKTOW_DO_MAPY}–{prog})')
+    return obszar, uchwyt
+
+
+def zapisz_wiarygodnosc(obszar, sciezka_geojson, crs, crs_zapisu="EPSG:4326",
+                        prog=MIN_EFEKTYWNYCH_TRAKTOW):
+    """Zapis obszaru małej liczby traktów obok wyniku mapy:
+    KDE_x/nazwa.geojson -> KDE_x/wiarygodnosc/nazwa.geojson (podkatalog, żeby
+    wzorce plików portalu go nie łapały). Brak obszaru = brak pliku (stary
+    plik jest usuwany)."""
+    import os
+    import geopandas as gpd
+    katalog, nazwa = os.path.split(sciezka_geojson)
+    cel = os.path.join(katalog, 'wiarygodnosc', nazwa)
+    if os.path.exists(cel):
+        os.remove(cel)
+    if obszar is None or obszar.is_empty:
+        return None
+    os.makedirs(os.path.dirname(cel), exist_ok=True)
+    gpd.GeoDataFrame([{'min_efektywnych_traktow': prog, 'min_traktow_do_mapy': MIN_TRAKTOW_DO_MAPY,
+                       'geometry': obszar}],
+                     geometry='geometry', crs=crs).to_crs(crs_zapisu).to_file(cel, driver='GeoJSON')
+    return cel
+
+
+def efektywna_liczba_traktow_siatka(coords, wagi, kernel_tla, X, Y, wartosc=None, krok=5,
+                                    progi=(MIN_TRAKTOW_DO_MAPY, MIN_EFEKTYWNYCH_TRAKTOW),
+                                    margines=0.3):
+    """
+    n_eff na siatce X, Y (meshgrid), liczone co `krok` punktów i dwuliniowo
+    interpolowane - n_eff zmienia się płynnie w skali pasma (~30 km), a oczko
+    siatki 500x500 to ~1,4 km, więc rzadsza siatka wystarcza, a jest ~krok^2
+    razy szybsza.
+    Interpolacja myli się najbardziej tam, gdzie traktów jest mało i n_eff
+    zmienia się stromo (brzegi skupisk gatunku - jodła 2020-2025: do 7,5%,
+    mapy ze wszystkich traktów: ~1%), więc oczka z wynikiem w pobliżu progów
+    (odcięcia i kreskowania, ±margines) są liczone dokładnie - granice są
+    takie jak przy obliczeniu na pełnej siatce.
+    wartosc: powierzchnia mapy - poza nią (NaN) n_eff = NaN.
+    """
+    from scipy.interpolate import RegularGridInterpolator
+    xs, ys = X[0, ::krok], Y[::krok, 0]
+    if xs[-1] != X[0, -1]:
+        xs, ys = np.append(xs, X[0, -1]), np.append(ys, Y[-1, 0])
+    XX, YY = np.meshgrid(xs, ys)
+    rzadka = efektywna_liczba_traktow(coords, wagi, kernel_tla,
+                                      np.vstack([XX.ravel(), YY.ravel()])).reshape(XX.shape)
+    interp = RegularGridInterpolator((ys, xs), rzadka)
+    n_eff = interp(np.column_stack([Y.ravel(), X.ravel()])).reshape(X.shape)
+    if wartosc is not None:
+        n_eff[np.isnan(wartosc)] = np.nan
+    blisko = np.isfinite(n_eff) & np.any([np.abs(n_eff / p - 1) < margines for p in progi], axis=0)
+    if blisko.any():
+        n_eff[blisko] = efektywna_liczba_traktow(coords, wagi, kernel_tla, np.vstack([X[blisko], Y[blisko]]))
+    return n_eff

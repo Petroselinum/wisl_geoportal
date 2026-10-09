@@ -9,6 +9,9 @@ wyświetlenia w przeglądarce:
     KDE_martwe_drewno/martwe_drewno_*.geojson    (kde_martwe_drewno.py)
     KDE_przyrost/przyrost_*.geojson              (kde_przyrost.py)
     KDE_uzytkowanie/uzytkowanie_*.geojson        (kde_uzytkowanie.py)
+    KDE_intensywnosc/intensywnosc_*.geojson      (kde_intensywnosc.py)
+    KDE_zmiany/zmiana_*.geojson                  (kde_zmiany.py)
+    KDE_*/wiarygodnosc/<ta sama nazwa>.geojson   (obszar małej liczby traktów)
     KDE_uszkodzenia/udzial_uszkodzonych_*.geojson (kde_uszkodzenia.py)
     KDE_uszkodzenia_ryzyko/istotne_ryzyko_*.geojson (kde_uszkodzenia_sparr.py)
 
@@ -96,8 +99,9 @@ TEMATY = {
     },
     'gatunek': {
         'nazwa': 'Udział gatunku w miąższości',
-        'opis': 'Udział miąższości gatunku w miąższości wszystkich drzew '
-                'względem tła lasu.',
+        'opis': 'Lokalny udział gatunku w zasobach: miąższość gatunku (także '
+                'w domieszce) / miąższość wszystkich drzew żywych, estymator '
+                'Nadaraya-Watsona.',
     },
     'zasobnosc': {
         'nazwa': 'Zasobność drzewostanów',
@@ -119,6 +123,19 @@ TEMATY = {
                 'powierzchni (5 lat). Cykl = lata pomiaru końcowego; co roku '
                 'mierzone jest ok. 20% powierzchni, więc np. cykl 2010-2014 '
                 'obejmuje użytkowanie z lat 2005-2014.',
+    },
+    'intensywnosc': {
+        'nazwa': 'Intensywność użytkowania',
+        'opis': 'Użytkowanie (rębne i przedrębne) jako % przyrostu miąższości w tym '
+                'samym okresie 5 lat między pomiarami - iloraz wygładzonych map '
+                'użytkowania i przyrostu. Powyżej 100% pozyskanie przekracza przyrost. '
+                'Cykl = lata pomiaru końcowego; co roku mierzone jest ok. 20% '
+                'powierzchni, więc np. cykl 2010-2014 obejmuje lata 2005-2014.',
+    },
+    'zmiany': {
+        'nazwa': 'Zmiany między cyklami',
+        'opis': 'Różnica wygładzonych map KDE: wybrany cykl minus poprzedni '
+                '(np. 2020-2025 minus 2015-2019). Brązowe - spadek, zielone - wzrost.',
     },
     'martwe': {
         'nazwa': 'Martwe drewno',
@@ -344,11 +361,28 @@ def _info_sredniej(r):
             f"Trakty: {int(r['n_traktow'])}"]
 
 
+def _warstwa_zapisana(g, info):
+    """Warstwa z pliku kde_srednia.rysuj_mape - kolor i opis każdego pasma
+    zapisane w pliku (legenda identyczna jak na PNG, także dla map zmian
+    z pasmem poniżej najniższego progu)."""
+    g = g.sort_values('prog').reset_index(drop=True)
+    legenda, cechy = [], []
+    for i, ((_, geom), (_, r)) in enumerate(zip(_pasma(g, 'prog'), g.iterrows())):
+        legenda.append({'kolor': r['kolor'], 'etykieta': r['etykieta']})
+        if geom is not None:
+            cechy.append({'type': 'Feature', 'properties': {'b': i}, 'geometry': geom})
+    return {'legenda': legenda, 'info': info,
+            'geojson': {'type': 'FeatureCollection', 'features': cechy}}
+
+
 def _czytaj_przyrost(plik):
     g = gpd.read_file(plik)
     r = g.iloc[0]
-    warstwa = _warstwa(_pasma(g, 'prog'), 'przyrost', _fmt, ' ' + r['jednostka'],
-                       _info_sredniej(r), maks=r['max_lokalna'])
+    if 'kolor' in g.columns:
+        warstwa = _warstwa_zapisana(g, _info_sredniej(r))
+    else:
+        warstwa = _warstwa(_pasma(g, 'prog'), 'przyrost', _fmt, ' ' + r['jednostka'],
+                           _info_sredniej(r), maks=r['max_lokalna'])
     return [('przyrost', 'ogolem', 'Wszystkie drzewostany', (0,), _okres(r), warstwa)]
 
 
@@ -357,10 +391,67 @@ def _czytaj_uzytkowanie(plik):
     r = g.iloc[0]
     rodzaj = r['rodzaj_uzytkowania']
     klucz = None if rodzaj == 'razem' else rodzaj
-    warstwa = _warstwa(_pasma(g, 'prog'), f'uzyt_{rodzaj}', _fmt, ' ' + r['jednostka'],
-                       _info_sredniej(r), maks=r['max_lokalna'])
+    if 'kolor' in g.columns:
+        warstwa = _warstwa_zapisana(g, _info_sredniej(r))
+    else:
+        warstwa = _warstwa(_pasma(g, 'prog'), f'uzyt_{rodzaj}', _fmt, ' ' + r['jednostka'],
+                           _info_sredniej(r), maks=r['max_lokalna'])
     return [('uzytkowanie', rodzaj, RODZAJE_UZYTKOWANIA[klucz].capitalize(),
              (list(RODZAJE_UZYTKOWANIA).index(klucz),), _okres(r), warstwa)]
+
+
+def _czytaj_intensywnosc(plik):
+    g = gpd.read_file(plik)
+    r = g.iloc[0]
+    info = [f"Krajowo: {_fmt(r['srednia_krajowa'], '%')} przyrostu",
+            f"Zakres lokalny: {_fmt(r['min_lokalna'])}–{_fmt(r['max_lokalna'], '%')}",
+            f"Trakty: {int(r['n_traktow'])}"]
+    return [('intensywnosc', 'razem', 'Użytkowanie rębne i przedrębne ÷ przyrost', (0,),
+             _okres(r), _warstwa_zapisana(g, info))]
+
+
+# Mapy zmian (kde_zmiany.py): wariant = wskaźnik, okres = cykl późniejszy
+NAZWY_ZMIAN = {'zasobnosc': 'Zasobność drzewostanów', 'martwe': 'Martwe drewno',
+               'przyrost': 'Przyrost miąższości'}
+
+
+def _czytaj_zmiany(plik):
+    g = gpd.read_file(plik)
+    r = g.iloc[0]
+    jedn = ' ' + r['jednostka']
+    znak = lambda v: ('+' if v > 0 else '') + _fmt(v, jedn)
+    info = [f"Zmiana {r['okres_od']} → {_okres(r)}",
+            f"Średnia krajowa: {znak(r['srednia_krajowa'])}",
+            f"Zakres lokalny: {znak(r['min_lokalna'])} do {znak(r['max_lokalna'])}",
+            f"Trakty: {int(r['n_traktow'])}"]
+    wsk = r['wskaznik']
+    return [('zmiany', wsk, NAZWY_ZMIAN.get(wsk, wsk), (list(NAZWY_ZMIAN).index(wsk)
+             if wsk in NAZWY_ZMIAN else 99,), _okres(r), _warstwa_zapisana(g, info))]
+
+
+def plik_wiarygodnosci(plik_geojson):
+    """KDE_x/nazwa.geojson -> KDE_x/wiarygodnosc/nazwa.geojson (kde_common.zapisz_wiarygodnosc)."""
+    katalog, nazwa = os.path.split(plik_geojson)
+    sciezka = os.path.join(katalog, 'wiarygodnosc', nazwa)
+    return sciezka if os.path.exists(sciezka) else None
+
+
+def _dodaj_wiarygodnosc(warstwa, plik):
+    """Obszar małej liczby traktów jako ostatnia pozycja legendy (wzor='kreski')."""
+    g = gpd.read_file(plik)
+    prog = int(g.iloc[0].get('min_efektywnych_traktow', 30))
+    dolny = g.iloc[0].get('min_traktow_do_mapy')            # starsze pliki go nie mają
+    geom = shapely.union_all(_napraw(g.to_crs(2180).geometry.values))
+    geom = _tylko_poligony(shapely.simplify(_napraw(geom), TOLERANCJA_M, preserve_topology=True))
+    geojson = _do_geojson([geom])[0] if geom is not None else None
+    if not geojson:
+        return
+    warstwa['legenda'].append({'kolor': '#444444', 'wzor': 'kreski',
+                               'etykieta': (f'mało traktów (efektywnie {int(dolny)}–{prog}) - wynik mniej pewny; '
+                                            f'poniżej {int(dolny)} - bez wyniku') if dolny is not None
+                               else f'mało traktów (efektywnie < {prog}) - wynik mniej pewny'})
+    warstwa['geojson']['features'].append(
+        {'type': 'Feature', 'properties': {'b': len(warstwa['legenda']) - 1}, 'geometry': geojson})
 
 
 def _czytaj_uszkodzenia(plik):
@@ -453,6 +544,8 @@ ZRODLA = [
     ('KDE_martwe_drewno/martwe_drewno_*.geojson', _czytaj_martwe),
     ('KDE_przyrost/przyrost_*.geojson', _czytaj_przyrost),
     ('KDE_uzytkowanie/uzytkowanie_*.geojson', _czytaj_uzytkowanie),
+    ('KDE_intensywnosc/intensywnosc_*.geojson', _czytaj_intensywnosc),
+    ('KDE_zmiany/zmiana_*.geojson', _czytaj_zmiany),
     ('KDE_uszkodzenia/udzial_uszkodzonych_*.geojson', _czytaj_uszkodzenia),
     ('KDE_uszkodzenia_ryzyko/istotne_ryzyko_*.geojson', _czytaj_ryzyko),
 ]
@@ -515,6 +608,9 @@ def zbuduj_katalog(katalog_bazowy='.'):
             png = plik_png(w['plik'])
             if png:
                 warstwy[id_warstwy]['png'] = {'plik': png, 'rozmiar': os.path.getsize(png)}
+            wiarygodnosc = plik_wiarygodnosci(w['plik'])
+            if wiarygodnosc:
+                _dodaj_wiarygodnosc(warstwy[id_warstwy], wiarygodnosc)
         if not warianty:
             continue
         lista = sorted(warianty.values(), key=lambda w: (w['klucz'], w['nazwa']))
@@ -606,12 +702,34 @@ class PanelKDE(MacroElement):
         return t ? t.warianty.filter(function(w) { return w.id === stan.wariant; })[0] : null;
     }
 
+    // Warstwa KDE leży nad RDLP / województwami / krainami (panel 'kde',
+    // z-index 450) i przechwytywała kliknięcia - popup z wynikami WISL się
+    // nie otwierał. Kliknięcie w pasmo KDE trafia do tego, co leży pod nim:
+    // panel KDE na chwilę ukryty (visibility: hidden wyłącza go z
+    // elementFromPoint), a kliknięcie wysłane do elementu pod kursorem.
+    function przekazKlikniecie(e) {
+        var ev = e.originalEvent, pane = map.getPane('kde');
+        L.DomEvent.stop(e);
+        pane.style.visibility = 'hidden';
+        var pod = document.elementFromPoint(ev.clientX, ev.clientY);
+        pane.style.visibility = '';
+        if (pod) pod.dispatchEvent(new MouseEvent('click', {
+            bubbles: true, cancelable: true, view: window,
+            clientX: ev.clientX, clientY: ev.clientY }));
+    }
+
+    // Warstwa = pasma (krycie z suwaka, podpowiedź, kliknięcie przekazywane
+    // dalej) + obszar małej liczby traktów (pozycja legendy z 'wzor'):
+    // przerywany obrys z lekkim wypełnieniem, niezależny od suwaka i bez
+    // reakcji na mysz - podpowiedź i kliknięcie trafiają do pasma pod nim.
     function zbuduj(idWarstwy) {
         if (cache[idWarstwy]) return cache[idWarstwy];
         var dane = K.warstwy[idWarstwy], leg = dane.legenda;
         var nazwaTematu = tematy[stan.temat].nazwa;
-        cache[idWarstwy] = L.geoJSON(dane.geojson, {
+        var kreski = function(f) { return !!leg[f.properties.b].wzor; };
+        var pasma = L.geoJSON(dane.geojson, {
             pane: 'kde',
+            filter: function(f) { return !kreski(f); },
             style: function(f) {
                 var p = leg[f.properties.b];
                 return { fillColor: p.kolor, color: p.krawedz || p.kolor,
@@ -621,13 +739,23 @@ class PanelKDE(MacroElement):
             onEachFeature: function(f, warstwa) {
                 warstwa.bindTooltip(nazwaTematu + ': <b>' + leg[f.properties.b].etykieta + '</b>',
                                     { sticky: true });
+                warstwa.on('click', przekazKlikniecie);
             }
         });
+        var malo = L.geoJSON(dane.geojson, {
+            pane: 'kde', interactive: false, filter: kreski,
+            style: function(f) {
+                var p = leg[f.properties.b];
+                return { color: p.kolor, weight: 1.3, dashArray: '5 4', opacity: 0.9,
+                         fillColor: p.kolor, fillOpacity: 0.15 };
+            }
+        });
+        cache[idWarstwy] = { grupa: L.layerGroup([pasma, malo]), pasma: pasma };
         return cache[idWarstwy];
     }
 
     function rysuj() {
-        if (aktywna) { map.removeLayer(aktywna); aktywna = null; }
+        if (aktywna) { map.removeLayer(aktywna.grupa); aktywna = null; }
         var w = wariant();
         var idWarstwy = w && w.okresy[stan.okres];
         el('kde-legenda').innerHTML = '';
@@ -637,13 +765,16 @@ class PanelKDE(MacroElement):
         if (!idWarstwy) return;
         // warstwa z pamięci podręcznej ma krycie z chwili, gdy była ostatnio
         // widoczna - ustawić bieżące z suwaka
-        aktywna = zbuduj(idWarstwy).addTo(map);
-        aktywna.setStyle({ fillOpacity: stan.krycie });
+        aktywna = zbuduj(idWarstwy);
+        aktywna.grupa.addTo(map);
+        aktywna.pasma.setStyle(aktywna.pasma.options.style);
         var dane = K.warstwy[idWarstwy];
         // legenda: najwyższe pasmo na górze, jak na mapach PNG
         el('kde-legenda').innerHTML = dane.legenda.slice().reverse().map(function(p) {
-            return '<div class="poz"><span class="kolor" style="background:' + p.kolor +
-                   (p.krawedz ? ';border-color:' + p.krawedz : '') + '"></span>' + p.etykieta + '</div>';
+            var tlo = p.wzor ? 'repeating-linear-gradient(45deg,' + p.kolor + ' 0 1px,transparent 1px 4px);' +
+                               'border:1px dashed ' + p.kolor : p.kolor + (p.krawedz ? ';border-color:' + p.krawedz : '');
+            return '<div class="poz"><span class="kolor" style="background:' + tlo + '"></span>' +
+                   p.etykieta + '</div>';
         }).join('');
         el('kde-info').innerHTML = dane.info.join('<br>');
         // mapa PNG oglądanej warstwy do pobrania
@@ -694,7 +825,7 @@ class PanelKDE(MacroElement):
     });
     el('kde-krycie').addEventListener('input', function() {
         stan.krycie = parseFloat(this.value);
-        if (aktywna) aktywna.setStyle({ fillOpacity: stan.krycie });
+        if (aktywna) aktywna.pasma.setStyle(aktywna.pasma.options.style);
     });
     kontener.querySelector('.panel-naglowek').addEventListener('click', function() {
         kontener.classList.toggle('zwiniety');

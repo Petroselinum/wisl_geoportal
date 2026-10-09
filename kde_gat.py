@@ -7,9 +7,16 @@ import pandas as pd
 import geopandas as gpd
 import shapely
 from scipy.stats import gaussian_kde
-from Wisl_quert import query_udzial_gat, query_tlo_lasu, query_mlode_uprawy
+from Wisl_quert import (query_udzial_gat, query_tlo_lasu, query_mlode_uprawy,
+                        query_zasobnosc, query_zasobnosc_gat)
 from kde_common import (
     dodaj_podklad,
+    efektywna_liczba_traktow_siatka,
+    odetnij_malo_traktow,
+    dodaj_przypis,
+    PRZYPIS_ODCIECIA,
+    oznacz_niska_wiarygodnosc,
+    zapisz_wiarygodnosc,
     wymus_wspolne_pasmo,
     kontur_na_zasieg,
     etykietuj_kontury,
@@ -68,15 +75,14 @@ CRS_ZAPISU = "EPSG:4326"
 #    żeby przestały być całkowicie niewidoczne (patrz niżej). Waga oparta
 #    na ZADRZEW by je automatycznie wykluczała.
 #
-# Jedynym elementem czyniącym wynik miąższościowym (miara='miazszosc') jest
-# UDZIAL_MIAZSZOSC. Ponieważ miąższość silnie zależy od wieku (a udział
-# gatunku w zasobach - od jego pozycji w piętrze), udział miąższościowy
-# zaniża gatunki młodsze i wolniej przyrastające. Sprawdzone na cyklu 4:
-# przejście na miarę powierzchniową podnosi udział brzozy o 42,6%, jodły
-# o 39,7%, dębu o 20,0%. Dla pytania "gdzie rośnie ten gatunek" właściwa jest
-# powierzchnia; miąższość odpowiada na inne pytanie - "gdzie są jego zasoby
-# drzewne" (i to jest sens trybu drzewostany=False, gdzie liczy się też
-# domieszka, nie tylko dominacja).
+# Miara 'miazszosc' (tryb drzewostany=False) to udział gatunku w ZASOBACH:
+# miąższość gatunku / miąższość wszystkich drzew żywych, lokalnie wygładzona
+# (_trakty_zasobow - zasobność gatunku i ogółem z Wisl_quert). Miąższość
+# silnie zależy od wieku, więc udział w zasobach zaniża gatunki młodsze
+# i wolniej przyrastające względem udziału powierzchniowego. Dla pytania
+# "gdzie rośnie ten gatunek" właściwa jest powierzchnia; miąższość odpowiada
+# na inne pytanie - "gdzie są jego zasoby drzewne" (z domieszką, nie tylko
+# dominacja).
 #
 # ==============================================================================
 # MIANOWNIK: CAŁA POWIERZCHNIA LEŚNA, NIE TYLKO DRZEWA >=7CM
@@ -151,6 +157,31 @@ KOLORY_PROGOW = {
 }
 
 
+def _trakty_zasobow(gat, rok_start, rok_end):
+    """
+    Trakty do udziału gatunku w ZASOBACH (miara='miazszosc'): waga_gat =
+    zasobność gatunku * SUMA_WSP_Z (query_zasobnosc_gat), waga_tlo = zasobność
+    ogółem * SUMA_WSP_Z (query_zasobnosc) - miąższość drzew żywych na tych
+    samych podpowierzchniach (drzewostany R_POW_PR=1, młode uprawy jako 0),
+    więc suma wszystkich gatunków na trakcie daje miąższość ogółem, a iloraz
+    KDE to lokalny udział gatunku w miąższości. Zwraca DataFrame NR_TRAKTU
+    (str), waga_tlo, waga_gat albo None.
+    """
+    kolumny = ['NR_TRAKTU', 'SR', 'SUMA_WSP_Z']
+    ogolem = pd.DataFrame(query_zasobnosc(rok_start=rok_start, rok_end=rok_end), columns=kolumny)
+    gatunek = pd.DataFrame(query_zasobnosc_gat(gat, rok_start=rok_start, rok_end=rok_end), columns=kolumny)
+    if ogolem.empty or gatunek.empty:
+        return None
+    df = ogolem.merge(gatunek, on='NR_TRAKTU', suffixes=('', '_GAT'))
+    df[['SR', 'SUMA_WSP_Z', 'SR_GAT', 'SUMA_WSP_Z_GAT']] = \
+        df[['SR', 'SUMA_WSP_Z', 'SR_GAT', 'SUMA_WSP_Z_GAT']].astype(float)
+    return pd.DataFrame({
+        'NR_TRAKTU': df['NR_TRAKTU'].astype(int).astype(str),
+        'waga_tlo': df['SR'] * df['SUMA_WSP_Z'],
+        'waga_gat': df['SR_GAT'] * df['SUMA_WSP_Z_GAT'],
+    })
+
+
 def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, miara=None, progi=PROGI_UDZIALU):
     """
     Lokalny, wygładzony przestrzennie udział gatunku, z zaznaczeniem obszarów
@@ -175,10 +206,16 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
             mianownik oparte WYŁĄCZNIE na WSP_Z (bez zadrzewienia - patrz
             uzasadnienie w komentarzu na górze pliku). Niezależne od wieku
             i gęstości drzewostanu.
-        'miazszosc' - udział w MIĄŻSZOŚCI. Licznik to UDZIAL_MIAZSZOSC * WSP_Z,
-            czyli faktyczny udział gatunku w zasobach ważony powierzchnią.
-            Wielkość zależna od wieku i produkcyjności: młody dąb w podszycie
-            pod starą sosną wnosi mało miąższości mimo zajmowanej powierzchni.
+        'miazszosc' - udział w ZASOBACH (miąższości drzew żywych): licznik
+            = zasobność gatunku * WSP_Z (query_zasobnosc_gat), tło = zasobność
+            ogółem * WSP_Z (query_zasobnosc), więc iloraz to lokalny
+            odpowiednik "miąższość gatunku / miąższość wszystkich drzew".
+            Tylko dla drzewostany=False (każde drzewo gatunku, także
+            w domieszce). Do 2026-10-09 licznikiem był udział miąższościowy
+            na podpowierzchni * WSP_Z, a tłem cała powierzchnia leśna - to
+            średni udział na podpowierzchni ważony POWIERZCHNIĄ (zręby i uprawy
+            jako 0), a nie udział w zasobach: krajowo 2020-2025 sosna 49,7%
+            zamiast 56,0%, brzoza 7,5% zamiast 5,4%, jodła 3,3% zamiast 4,7%.
 
         None (domyślnie) dobiera miarę do trybu: 'powierzchnia' dla drzewostanów,
         'miazszosc' dla gatunku z domieszkami. Miara powierzchniowa NIE JEST
@@ -186,14 +223,21 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
         udziału gatunku wewnątrz drzewostanu mieszanego, a zaliczenie całej
         podpowierzchni domieszce zawyżałoby wynik wielokrotnie.
 
-    Mianownik (tło) jest zawsze ten sam - cała badana powierzchnia leśna
-    (query_tlo_lasu) - więc mapy są wyrażone w tej samej, porównywalnej skali.
+    Tło miary 'powierzchnia' to cała badana powierzchnia leśna (query_tlo_lasu),
+    miary 'miazszosc' - miąższość drzew żywych.
     """
     if miara is None:
         miara = 'powierzchnia' if drzewostany else 'miazszosc'
 
     if miara not in ('powierzchnia', 'miazszosc'):
         raise ValueError(f"Nieznana miara: {miara!r} (dozwolone: 'powierzchnia', 'miazszosc')")
+
+    if miara == 'miazszosc' and drzewostany:
+        print(
+            f"Pominięto mapę: udział w miąższości liczony jest dla wszystkich drzew gatunku "
+            f"(drzewostany=False), nie dla drzewostanów (gatunek {gat}, lata {rok_start}-{rok_end})."
+        )
+        return
 
     if miara == 'powierzchnia' and not drzewostany:
         print(
@@ -206,51 +250,57 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
     adnotacja = "drzewostany" if drzewostany else "gatunek"
     okres = f"{rok_start}-{rok_end}"
 
-    # ==============================================================================
-    # 1. DANE: LICZNIK (GATUNEK) I MIANOWNIK (CAŁA POWIERZCHNIA LEŚNA)
-    # ==============================================================================
-    udzial_gat = query_udzial_gat(gat, rok_start, rok_end)
-    if not udzial_gat:
-        print(f"Brak danych z bazy dla gatunku {gat} w latach {okres}.")
-        return
+    if miara == 'miazszosc':
+        # udział w zasobach - trakty z zasobności (_trakty_zasobow)
+        df_model = _trakty_zasobow(gat, rok_start, rok_end)
+        if df_model is None:
+            print(f"Brak danych zasobności gatunku {gat} w latach {okres}.")
+            return
+    else:
+        # ==============================================================================
+        # 1. DANE: LICZNIK (GATUNEK) I MIANOWNIK (CAŁA POWIERZCHNIA LEŚNA)
+        # ==============================================================================
+        udzial_gat = query_udzial_gat(gat, rok_start, rok_end)
+        if not udzial_gat:
+            print(f"Brak danych z bazy dla gatunku {gat} w latach {okres}.")
+            return
 
-    df_gat = pd.DataFrame(udzial_gat, columns=[
-        'NR_PODPOW', 'NR_CYKLU', 'UDZIAL_MIAZSZOSC', 'reprezentatywnosc_gat',
-        'ZADRZEW', 'SUMA_MIAZSZOSC_gat', 'SUMA_MIAZSZOSC'])
+        df_gat = pd.DataFrame(udzial_gat, columns=[
+            'NR_PODPOW', 'NR_CYKLU', 'UDZIAL_MIAZSZOSC', 'reprezentatywnosc_gat',
+            'ZADRZEW', 'SUMA_MIAZSZOSC_gat', 'SUMA_MIAZSZOSC'])
 
-    # Filtr dominacji: gatunek stanowi co najmniej 60% miąższości na
-    # podpowierzchni (sposób wyłonienia gatunku panującego). Bez warunku na
-    # ZADRZEW - patrz uzasadnienie na górze pliku (metoda wag go pomija
-    # celowo, więc niespójnie byłoby zostawiać go tu jako próg kwalifikacji).
-    if drzewostany:
-        df_gat = df_gat.query("UDZIAL_MIAZSZOSC >= 0.6")
+        # Filtr dominacji: gatunek stanowi co najmniej 60% miąższości na
+        # podpowierzchni (sposób wyłonienia gatunku panującego). Bez warunku na
+        # ZADRZEW - patrz uzasadnienie na górze pliku (metoda wag go pomija
+        # celowo, więc niespójnie byłoby zostawiać go tu jako próg kwalifikacji).
+        if drzewostany:
+            df_gat = df_gat.query("UDZIAL_MIAZSZOSC >= 0.6")
 
-    tlo = query_tlo_lasu(rok_start, rok_end)
-    if not tlo:
-        print(f"Brak danych tła dla lat {okres}.")
-        return
-    df_tlo = pd.DataFrame(tlo, columns=['NR_PODPOW', 'NR_CYKLU', 'waga_tlo'])
+        tlo = query_tlo_lasu(rok_start, rok_end)
+        if not tlo:
+            print(f"Brak danych tła dla lat {okres}.")
+            return
+        df_tlo = pd.DataFrame(tlo, columns=['NR_PODPOW', 'NR_CYKLU', 'waga_tlo'])
 
-    # Klucz rekordu to para (NR_PODPOW, NR_CYKLU) - NR_PODPOW sam nie jest
-    # unikalny między cyklami (82% powtarza się w kolejnych cyklach). Złączenie
-    # po samym NR_PODPOW przy zakresie lat obejmującym kilka cykli dawało
-    # iloczyn kartezjański (sprawdzone: dla 2015-2025 licznik 1,92x, mianownik
-    # 2,00x zawyżony). NR_CYKLU normalizujemy do int, bo OBL_ADRES_POW trzyma
-    # go jako NCHAR, a DRZEWA_OD_7/ADRES_POW jako INTEGER.
-    KLUCZ = ['NR_PODPOW', 'NR_CYKLU']
-    for df in (df_gat, df_tlo):
-        df['NR_PODPOW'] = pd.to_numeric(df['NR_PODPOW']).astype('int64')
-        df['NR_CYKLU'] = pd.to_numeric(df['NR_CYKLU']).astype('int64')
+        # Klucz rekordu to para (NR_PODPOW, NR_CYKLU) - NR_PODPOW sam nie jest
+        # unikalny między cyklami (82% powtarza się w kolejnych cyklach). Złączenie
+        # po samym NR_PODPOW przy zakresie lat obejmującym kilka cykli dawało
+        # iloczyn kartezjański (sprawdzone: dla 2015-2025 licznik 1,92x, mianownik
+        # 2,00x zawyżony). NR_CYKLU normalizujemy do int, bo OBL_ADRES_POW trzyma
+        # go jako NCHAR, a DRZEWA_OD_7/ADRES_POW jako INTEGER.
+        KLUCZ = ['NR_PODPOW', 'NR_CYKLU']
+        for df in (df_gat, df_tlo):
+            df['NR_PODPOW'] = pd.to_numeric(df['NR_PODPOW']).astype('int64')
+            df['NR_CYKLU'] = pd.to_numeric(df['NR_CYKLU']).astype('int64')
 
-    # Wagę licznika bierzemy z TŁA (waga_tlo = WSP_Z), a nie z
-    # reprezentatywnosc_gat liczonej w SQL (ta wciąż zawiera ZADRZEW - służy
-    # tylko do odsiania w SQL zerowych/ujemnych wag, nie do obliczeń tutaj).
-    # Tylko wtedy licznik i mianownik stoją na dokładnie tej samej wadze.
-    # Podpowierzchnie z drzewami danego gatunku są ścisłym podzbiorem tła
-    # (R_POW_PR=1 jest podzbiorem KODY_R_POW_LAS), więc złączenie niczego nie gubi.
-    df_gat = df_gat.merge(df_tlo, on=KLUCZ, how='inner')
+        # Wagę licznika bierzemy z TŁA (waga_tlo = WSP_Z), a nie z
+        # reprezentatywnosc_gat liczonej w SQL (ta wciąż zawiera ZADRZEW - służy
+        # tylko do odsiania w SQL zerowych/ujemnych wag, nie do obliczeń tutaj).
+        # Tylko wtedy licznik i mianownik stoją na dokładnie tej samej wadze.
+        # Podpowierzchnie z drzewami danego gatunku są ścisłym podzbiorem tła
+        # (R_POW_PR=1 jest podzbiorem KODY_R_POW_LAS), więc złączenie niczego nie gubi.
+        df_gat = df_gat.merge(df_tlo, on=KLUCZ, how='inner')
 
-    if miara == 'powierzchnia':
         # Cała powierzchnia drzewostanu liczy się na rzecz gatunku, który go
         # tworzy.
         df_gat['waga_gat'] = df_gat['waga_tlo']
@@ -272,31 +322,27 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
                 [df_gat[KLUCZ + ['waga_tlo', 'waga_gat']], df_mlode_gat],
                 ignore_index=True,
             )
-    else:
-        # Powierzchnia ważona faktycznym udziałem gatunku w miąższości. Młode
-        # uprawy pomijamy - nie mają miąższości do zmierzenia.
-        df_gat['waga_gat'] = df_gat['UDZIAL_MIAZSZOSC'] * df_gat['waga_tlo']
 
-    if df_gat.empty:
-        print(f"Brak powierzchni po odfiltrowaniu ({adnotacja}) dla gatunku {gat} w latach {okres}.")
-        return
+        if df_gat.empty:
+            print(f"Brak powierzchni po odfiltrowaniu ({adnotacja}) dla gatunku {gat} w latach {okres}.")
+            return
 
-    # ==============================================================================
-    # 2. AGREGACJA DO TRAKTU
-    # ==============================================================================
-    for df in (df_gat, df_tlo):
-        df['NR_TRAKTU'] = pd.to_numeric(df['NR_PODPOW']).astype('int64') // 1000
+        # ==============================================================================
+        # 2. AGREGACJA DO TRAKTU
+        # ==============================================================================
+        for df in (df_gat, df_tlo):
+            df['NR_TRAKTU'] = pd.to_numeric(df['NR_PODPOW']).astype('int64') // 1000
 
-    f_trakty = df_gat.groupby('NR_TRAKTU', as_index=False)['waga_gat'].sum()
-    g_trakty = df_tlo.groupby('NR_TRAKTU', as_index=False)['waga_tlo'].sum()
+        f_trakty = df_gat.groupby('NR_TRAKTU', as_index=False)['waga_gat'].sum()
+        g_trakty = df_tlo.groupby('NR_TRAKTU', as_index=False)['waga_tlo'].sum()
 
-    # LEFT JOIN od tła: trakty bez gatunku zostają w modelu z wagą licznika 0.
-    # To nie jest kosmetyka - bez nich iloraz liczyłby lokalną średnią tylko
-    # po powierzchniach, na których gatunek już jest, więc wszędzie wychodziłby
-    # zawyżony udział (a obszary bez gatunku w ogóle nie obniżałyby wyniku).
-    df_model = g_trakty.merge(f_trakty, on='NR_TRAKTU', how='left')
-    df_model['waga_gat'] = df_model['waga_gat'].fillna(0.0)
-    df_model['NR_TRAKTU'] = df_model['NR_TRAKTU'].astype(str)
+        # LEFT JOIN od tła: trakty bez gatunku zostają w modelu z wagą licznika 0.
+        # To nie jest kosmetyka - bez nich iloraz liczyłby lokalną średnią tylko
+        # po powierzchniach, na których gatunek już jest, więc wszędzie wychodziłby
+        # zawyżony udział (a obszary bez gatunku w ogóle nie obniżałyby wyniku).
+        df_model = g_trakty.merge(f_trakty, on='NR_TRAKTU', how='left')
+        df_model['waga_gat'] = df_model['waga_gat'].fillna(0.0)
+        df_model['NR_TRAKTU'] = df_model['NR_TRAKTU'].astype(str)
 
     # ==============================================================================
     # 3. GEOMETRIA TRAKTÓW
@@ -363,6 +409,11 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
         udzial_gatunku = (f_est / g_est) * wspolczynnik_korekty_skali
 
     udzial_gatunku[mask_niskie_tlo] = np.nan
+    # Efektywna liczba traktów tła (kde_common): gdzie wynik opierałby się
+    # na efektywnie < MIN_TRAKTOW_DO_MAPY traktach, mapy nie ma - przed
+    # maksimum i progami; do MIN_EFEKTYWNYCH_TRAKTOW kreskowanie niżej.
+    n_eff = efektywna_liczba_traktow_siatka(coords, waga_tlo, kernel_tlo, X, Y, wartosc=udzial_gatunku)
+    odcieto = odetnij_malo_traktow(udzial_gatunku, n_eff)
     wartosci_valid = udzial_gatunku[~np.isnan(udzial_gatunku)]
 
     if wartosci_valid.size == 0:
@@ -434,6 +485,10 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
     etykietuj_kontury(ax, progi_udzialu, zasiegi_geom, granica_polski,
                       lambda p: f"> {p:.0%}", kolor='#0d3b10')
 
+    # Obszary, gdzie wynik opiera się na małej liczbie traktów - kreskowane
+    # (efektywna liczba traktów tła, kde_common.oznacz_niska_wiarygodnosc)
+    obszar_malo, uchwyt_malo = oznacz_niska_wiarygodnosc(ax, X, Y, n_eff)
+
     gdf_model.plot(ax=ax, color='gray', markersize=3, alpha=0.3)
     gdf_model[maska_gat].plot(ax=ax, color='red', markersize=6, alpha=0.5)
     poland.boundary.plot(ax=ax, color='black', linewidth=1)
@@ -500,6 +555,8 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
         mlines.Line2D([], [], color='black', linewidth=1, label='Granica Polski'),
     ]
 
+    if uchwyt_malo is not None:
+        legend_elements.insert(sum(isinstance(h, mpatches.Patch) for h in legend_elements), uchwyt_malo)
     ax.legend(
         handles=legend_elements, loc='center left', bbox_to_anchor=(1.01, 0.5),
         frameon=True, facecolor='white', fontsize=9,
@@ -541,6 +598,9 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
     gdf_zasieg.to_crs(CRS_ZAPISU).to_file(
         f"KDE_gatunki/zasieg_{gat}_{okres}_{adnotacja}_{miara}_epsg4326.geojson", driver="GeoJSON"
     )
+    zapisz_wiarygodnosc(obszar_malo, f"KDE_gatunki/zasieg_{gat}_{okres}_{adnotacja}_{miara}_epsg4326.geojson", CRS_OBLICZENIOWY, CRS_ZAPISU)
+    if odcieto:
+        dodaj_przypis(ax, PRZYPIS_ODCIECIA)
     fig.savefig(f"KDE_gatunki/mapa_{gat}_{okres}_{adnotacja}_{miara}.png",
                 dpi=300, bbox_inches="tight")
     plt.close(fig)

@@ -1,8 +1,7 @@
-from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, DRZEWA_MARTWE, OBL_DRZEWA_MARTWE, POW_A_B, engine
+from WislDb import DRZEWA_OD_7, OBL_DRZEWA_OD_7, OBL_ADRES_POW, ADRES_POW, POW_A_B, engine
 from sqlmodel import Session, select, func, cast, Float, Integer, literal_column, text
 from sqlalchemy import or_, and_, case
 import geopandas as gpd
-import math
 
 # R_POW_PR (słownik SL_R_POW_LES) - las BEZ aktualnego drzewostanu, ale wciąż
 # część gospodarki leśnej: Halizna(7), Zrąb(8), Płazowina(9), Do naturalnej
@@ -94,6 +93,18 @@ def _dopasowanie_gatunku(kolumna, gatunek):
     return or_(kolumna == gatunek, kolumna.like(gatunek + '.%'))
 
 
+def _drzewo_zywe():
+    # Drzewa ŻYWE >= 7 cm bez przestojów (WAR = 10). W I cyklu (2005-2009)
+    # martwe drzewa stojące (posusz) zapisywano w tej samej tabeli z kodem
+    # uszkodzenia 50 (instrukcja WISL 2005, rozdz. 5.2; w bazie 12 897 drzew,
+    # tylko I cykl) - nie są częścią zasobów drzew żywych. Baza też ich nie
+    # liczy: OBL_ADRES_POW.ZASOBNOSC = miąższość drzew bez kodu 50 w 97,4%
+    # podpowierzchni I cyklu, z nimi - w 82,5% (sprawdzone 2026-10-09). Posusz
+    # I cyklu jest w martwym drewnie (ZAS_MARTW_2, martwe_drewno).
+    return and_(DRZEWA_OD_7.WAR != 10,
+                or_(DRZEWA_OD_7.USZK_RODZ1.is_(None), DRZEWA_OD_7.USZK_RODZ1 != 50))
+
+
 def query_udzial_gat(gatunek: str, rok_start: int = None, rok_end: int = None):
     # Nawiązanie połączenia z bazą WISL
     with Session(engine) as session:
@@ -117,7 +128,7 @@ def query_udzial_gat(gatunek: str, rok_start: int = None, rok_end: int = None):
                 (DRZEWA_OD_7.NR_PODPOW == powierzchnie_z_gatunkiem.c.NR_PODPOW) &
                 (DRZEWA_OD_7.NR_CYKLU == powierzchnie_z_gatunkiem.c.NR_CYKLU)
             )
-            .where(DRZEWA_OD_7.WAR != 10)
+            .where(_drzewo_zywe())
             .group_by(DRZEWA_OD_7.NR_PODPOW, DRZEWA_OD_7.NR_CYKLU)
         .subquery())
 
@@ -156,7 +167,7 @@ def query_udzial_gat(gatunek: str, rok_start: int = None, rok_end: int = None):
                 (DRZEWA_OD_7.NR_CYKLU == ADRES_POW.NR_CYKLU))
             .where(_dopasowanie_gatunku(DRZEWA_OD_7.GAT, gatunek),
                 _filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
-                DRZEWA_OD_7.WAR != 10,
+                _drzewo_zywe(),
                 ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX)
             .group_by(DRZEWA_OD_7.NR_PODPOW, 
                     DRZEWA_OD_7.NR_CYKLU,
@@ -245,7 +256,7 @@ def query_mlode_uprawy(rok_start: int = None, rok_end: int = None):
             .join(ADRES_POW,
                 (ADRES_POW.NR_PODPOW == DRZEWA_OD_7.NR_PODPOW) &
                 (ADRES_POW.NR_CYKLU == DRZEWA_OD_7.NR_CYKLU))
-            .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end), DRZEWA_OD_7.WAR != 10)
+            .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end), _drzewo_zywe())
             .distinct()
         ).subquery()
 
@@ -303,7 +314,7 @@ def query_zasobnosc(rok_start: int = None, rok_end: int = None):
     with Session(engine) as session:
         ma_drzewa = (
             select(DRZEWA_OD_7.NR_PODPOW, DRZEWA_OD_7.NR_CYKLU)
-            .where(DRZEWA_OD_7.WAR != 10)
+            .where(_drzewo_zywe())
             .distinct()
         ).subquery()
 
@@ -386,7 +397,7 @@ def query_zasobnosc_gat(gatunek: str, rok_start: int = None, rok_end: int = None
             # DRZEWA_OD_7 (jak ma_drzewa w query_zasobnosc); drzewa bez
             # miąższości dają NULL, który SUM pomija.
             .outerjoin(OBL_DRZEWA_OD_7, DRZEWA_OD_7.ID == OBL_DRZEWA_OD_7.ID)
-            .where(DRZEWA_OD_7.WAR != 10)
+            .where(_drzewo_zywe())
             .group_by(DRZEWA_OD_7.NR_PODPOW, DRZEWA_OD_7.NR_CYKLU)
         ).subquery()
 
@@ -572,88 +583,68 @@ def query_drzewostany_uszk(rok_start: int = None, rok_end: int = None):
         ).all()
     return powierzchnie_uszk
 
-#Martwe - średnia ważona wsp Z w trakcie
-
 def martwe_drewno(rok_start: int = None, rok_end: int = None):
-    # MIAZSZOSC w OBL_DRZEWA_MARTWE to surowa objętość zmierzona na kole
-    # próbnym o stałym promieniu 11,28 m (pole = pi*11,28^2 ~= 399,73 m^2 =
-    # ~0,04 ha). WSP_Z to udział podpowierzchni w pełnej powierzchni próbnej
-    # (nie zawsze 1,0 - schematyczna siatka WISL: czasem tylko część
-    # podpowierzchni faktycznie wypada w lesie). WSP_Z * pole_kola to więc
-    # RZECZYWIŚCIE REPREZENTOWANA powierzchnia danej podpowierzchni - nie
-    # waga, przez którą mnoży się samą objętość.
+    # Zasobność martwego drewna [m3/ha] na TRAKT, osobno leżące / stojące /
+    # razem: SR_x = SUMA(WSP_Z * x) / SUMA(WSP_Z) - średnia gęstości
+    # podpowierzchni ważona reprezentowaną powierzchnią, jak query_zasobnosc.
+    # Uniwersum: podpowierzchnie R_POW_PR 1-12 (bez infrastruktury), STATUS_GRUNTU
+    # <= 3, WSP_Z > 0; podpowierzchnia bez martwego drewna = 0.
     #
-    # Poprawny estymator gęstości (m3/ha) na trakt to:
-    #   SUMA surowej objętości / (SUMA_WSP_Z * pole_jednego_kola_w_ha)
-    # czyli "całkowita zmierzona objętość" / "całkowita reprezentowana
-    # powierzchnia" - NIE średnia ważona objętości przez WSP_Z (to dwie
-    # różne rzeczy: ważenie objętości przez WSP_Z przed uśrednieniem
-    # systematycznie zaniża wkład podpowierzchni o niskiej reprezentatywności,
-    # nawet jeśli akurat na nich znaleziono dużo martwego drewna - sprawdzone
-    # przykładem liczbowym: 66,7 vs 133,4 m3/ha dla tych samych danych,
-    # w zależności od tego, która wersja wzoru jest użyta).
-    PRZELICZNIK_NA_HEKTAR = 10000.0 / (math.pi * 11.28 ** 2)
-
+    # Gęstości z OBL_ADRES_POW (m3/ha podpowierzchni, policzone przez bazę):
+    #   leżące  = ZAS_MARTW_L,
+    #   stojące = ZAS_MARTW_1 (złomy i posusz; w I cyklu tylko złomy)
+    #             + ZAS_MARTW_2 (posusz I cyklu, w kolejnych cyklach puste).
+    # Dlaczego nie z surowych objętości DRZEWA_MARTWE (jak do 2026-10-09):
+    #  - w cyklach I-II martwe drewno mierzono na kole zależnym od wieku
+    #    drzewostanu na podpowierzchni (instrukcja WISL 2005, rozdz. 2.4 i 5.1:
+    #    2 a dla I-III kl. wieku i gruntów niezalesionych, 4 a dla IV kl.
+    #    i starszych, 5 a dla budowy przerębowej); dawne stałe 400 m2 zaniżało
+    #    II cykl o ok. 21% (4,60 zamiast 5,82 m3/ha);
+    #  - w I cyklu posusz zapisywano wśród drzew > 7 cm (DRZEWA_OD_7, kod
+    #    uszkodzenia 50), a złomy jako drzewa złamane (TYP 3) razem z częścią
+    #    leżącą (instrukcja 2005, rozdz. 5.2 i 5.3) - podobnie część złomów
+    #    w II cyklu. Surowych wierszy nie da się podzielić na stojące
+    #    i leżące, baza robi to sama. Dawna mapa "martwe drewno 2005-2009"
+    #    zawierała przez to tylko drewno leżące (3,1 z 6,2 m3/ha).
+    # Sprawdzone 2026-10-09 na podpowierzchniach z martwym drewnem:
+    #  - ZAS_MARTW_L + ZAS_MARTW_1 = objętość wszystkich typów / pole pomiaru
+    #    w 100% podpowierzchni każdego cyklu (pole: POW_A_B.POW_A w cyklach
+    #    I-II, WSP_Z * 399,73 m2 od III cyklu); w I cyklu objętość typów 1-3;
+    #  - ZAS_MARTW_2 = posusz z kodem 50 / (WSP_Z * koło) w 98,6% (I cykl);
+    #  - od III cyklu ZAS_MARTW_L = typy 1-3, ZAS_MARTW_1 = typy 4-5 (100%).
+    # Średnie krajowe (leżące / stojące / razem): 2005-2009 3,11 / 3,06 / 6,17,
+    # 2010-2014 2,53 / 3,29 / 5,82, 2015-2019 4,25 / 4,26 / 8,51,
+    # 2020-2025 7,12 / 5,34 / 12,46 m3/ha.
     with Session(engine) as session:
-        NR_Traktu_z = (OBL_ADRES_POW.NR_PODPOW // literal_column('1000')).label('NR_Traktu')
-        z_pow_les = (
+        wsp_z = cast(OBL_ADRES_POW.WSP_Z, Float)
+
+        def gestosc(*kolumny):
+            # ujemna gęstość to błąd danych (ujemne objętości 3 daglezji-posuszu
+            # w II-III cyklu) - liczona jak 0, inaczej gaussian_kde przerywa
+            # ("aweights cannot be negative")
+            x = sum(func.coalesce(cast(k, Float), 0.0) for k in kolumny)
+            return case((x < 0, 0.0), else_=x)
+
+        lezace = gestosc(OBL_ADRES_POW.ZAS_MARTW_L)
+        stojace = gestosc(OBL_ADRES_POW.ZAS_MARTW_1, OBL_ADRES_POW.ZAS_MARTW_2)
+        NR_Traktu = (OBL_ADRES_POW.NR_PODPOW // literal_column('1000')).label('NR_Traktu')
+        return session.exec(
             select(
-                NR_Traktu_z,
-                cast(func.sum(OBL_ADRES_POW.WSP_Z), Float).label('SUMA_WSP_Z')
+                NR_Traktu,
+                *[(func.sum(wsp_z * x) / func.sum(wsp_z)).label(nazwa)
+                  for nazwa, x in [('SR_LEZACE', lezace), ('SR_STOJACE', stojace),
+                                   ('SR_RAZEM', lezace + stojace)]],
+                func.sum(wsp_z).label('SUMA_WSP_Z'),
             )
             .join(ADRES_POW,
                 (ADRES_POW.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
                 (ADRES_POW.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
-            .where(
-                _filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
-                ADRES_POW.R_POW_PR.in_([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
-                ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX
-            )
-            .group_by(NR_Traktu_z)
-        ).cte('z_pow_les')
-
-        # ADRES_POW dociągnięty tu tylko po to, żeby filtrować DRZEWA_MARTWE
-        # po tym samym zakresie lat co z_pow_les (DRZEWA_MARTWE nie ma
-        # kolumny DATA) - martwe drewno z podpowierzchni poza [rok_start,
-        # rok_end] albo o odrzucanym STATUS_GRUNTU nie powinno wejść do sumy.
-        NR_Traktu_m = (OBL_ADRES_POW.NR_PODPOW // literal_column('1000')).label('NR_Traktu')
-        martwe = (
-            select(
-                NR_Traktu_m,
-                DRZEWA_MARTWE.TYP,
-                cast(func.sum(OBL_DRZEWA_MARTWE.MIAZSZOSC), Float).label('MIAZSZOSC_martwe_pow')
-            )
-            .join(OBL_DRZEWA_MARTWE, DRZEWA_MARTWE.ID == OBL_DRZEWA_MARTWE.ID)
-            .join(OBL_ADRES_POW,
-                (DRZEWA_MARTWE.NR_PODPOW == OBL_ADRES_POW.NR_PODPOW) &
-                (DRZEWA_MARTWE.NR_CYKLU == OBL_ADRES_POW.NR_CYKLU))
-            .join(ADRES_POW,
-                (DRZEWA_MARTWE.NR_PODPOW == ADRES_POW.NR_PODPOW) &
-                (DRZEWA_MARTWE.NR_CYKLU == ADRES_POW.NR_CYKLU))
             .where(_filtr_lat(ADRES_POW.DATA, rok_start, rok_end),
+                   ADRES_POW.R_POW_PR.in_(list(range(1, 13))),
                    ADRES_POW.STATUS_GRUNTU <= STATUS_GRUNTU_MAX,
-                   # Ujemna miąższość to błąd danych (3 daglezje-posusz w II-III
-                   # cyklu, -0,01 do -0,06 m3). W sumie wszystkich typów ginęła
-                   # w trakcie, ale przy samym drewnie stojącym trakt dostawał
-                   # ujemną wagę i gaussian_kde przerywał.
-                   OBL_DRZEWA_MARTWE.MIAZSZOSC >= 0)
-            .group_by(NR_Traktu_m, OBL_ADRES_POW.NR_PODPOW, DRZEWA_MARTWE.TYP)
-        ).cte('martwe')
-
-        wynik = session.exec(
-            select(
-                z_pow_les.c.NR_Traktu,
-                martwe.c.TYP,
-                ((func.coalesce(func.sum(martwe.c.MIAZSZOSC_martwe_pow), 0) / z_pow_les.c.SUMA_WSP_Z)
-                 * PRZELICZNIK_NA_HEKTAR).label('SR_MIAZSZOSC'),
-                z_pow_les.c.SUMA_WSP_Z
-            )
-            .select_from(z_pow_les)
-            .join(martwe, martwe.c.NR_Traktu == z_pow_les.c.NR_Traktu, isouter=True)
-            .group_by(z_pow_les.c.NR_Traktu, martwe.c.TYP, z_pow_les.c.SUMA_WSP_Z)
+                   wsp_z > 0)
+            .group_by(NR_Traktu)
         ).all()
-
-        return wynik
 
 
 def query_all_wisl_plots(rok_start, rok_end):
