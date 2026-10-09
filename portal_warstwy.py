@@ -434,15 +434,17 @@ class PanelWarstw(MacroElement):
                 return '<label><input type="checkbox" data-nakladka="' + i + '">' + n.nazwa + '</label>';
             }).join('') + '</div>' +
             '<div class="panel-sekcja">Wyniki WISL</div>' +
-            '<div class="panel-okresy" id="war-podzialy">' + podzialy.map(function(j) {
-                return '<button type="button" data-podzial="' + j + '">' + J[j].przycisk + '</button>';
-            }).join('') + '</div>' +
-            '<div class="panel-zakres" id="war-zakres"></div>' +
             '<select id="war-wskaznik"><option value="">— wyłączone —</option>' +
             D.wskazniki.map(function(w) {
                 return '<option value="' + w.id + '">' + w.nazwa + ' [' + w.jednostka + ']</option>';
             }).join('') + '</select>' +
+            // przełącznik podziału (i zakres danych) dopiero po wybraniu
+            // wskaźnika - pod listą, żeby lista nie przeskakiwała przy wyborze
             '<div id="war-wybor" style="display:none">' +
+            '<div class="panel-okresy" id="war-podzialy" style="margin-top:6px">' + podzialy.map(function(j) {
+                return '<button type="button" data-podzial="' + j + '">' + J[j].przycisk + '</button>';
+            }).join('') + '</div>' +
+            '<div class="panel-zakres" id="war-zakres"></div>' +
             '<label class="pole">Cykl WISL</label><div class="panel-okresy" id="war-okresy">' +
             okresy.map(function(o) {
                 return '<button type="button" data-okres="' + o + '">' + o + '</button>';
