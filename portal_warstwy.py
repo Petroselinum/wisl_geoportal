@@ -441,14 +441,14 @@ class PanelWarstw(MacroElement):
     };
 
     // --- Panel "Wyniki WISL" (pod "Warstwy", nad "Analizy KDE") -----------
-    // Ten sam układ co panel KDE: lista -> wybór podziału -> cykl -> legenda.
+    // Ten sam układ co panel KDE: temat -> wybór podziału -> cykl -> legenda.
     var panelWyniki = L.control({ position: 'topright' });
     panelWyniki.onAdd = function() {
         var d = L.DomUtil.create('div', 'panel-wisl');
         d.innerHTML =
             '<div class="panel-naglowek"><h4>Wyniki WISL</h4><span class="zwin" title="Zwiń / rozwiń">▾</span></div>' +
             '<div class="panel-tresc">' +
-            '<label class="pole" for="war-wskaznik">Wskaźnik</label>' +
+            '<label class="pole" for="war-wskaznik">Temat</label>' +
             '<select id="war-wskaznik"><option value="">— wyłączone —</option>' +
             D.wskazniki.map(function(w) {
                 return '<option value="' + w.id + '">' + w.nazwa + ' [' + w.jednostka + ']</option>';
@@ -488,6 +488,10 @@ class PanelWarstw(MacroElement):
         var cb = checkbox(j);
         if (!cb.checked) { cb.checked = true; map.addLayer(warstwy[j]); }
         warstwy[j].bringToFront();
+    }
+    function ukryjWarstwe(j) {
+        var cb = checkbox(j);
+        if (cb.checked) { cb.checked = false; map.removeLayer(warstwy[j]); }
     }
 
     function odswiez() {
@@ -551,8 +555,14 @@ class PanelWarstw(MacroElement):
     el('war-podzialy').addEventListener('click', function(e) {
         var b = e.target.closest('button');
         if (!b) return;
+        var poprzedni = stan.podzial;
         stan.podzial = b.getAttribute('data-podzial');
-        if (stan.wskaznik) pokazWarstwe(stan.podzial);
+        if (stan.wskaznik) {
+            // zmiana podziału wyłącza warstwę poprzedniego (także w panelu
+            // "Warstwy") - na mapie zostaje tylko kartogram wybranego
+            if (poprzedni !== stan.podzial) ukryjWarstwe(poprzedni);
+            pokazWarstwe(stan.podzial);
+        }
         map.closePopup();
         odswiez();
     });
