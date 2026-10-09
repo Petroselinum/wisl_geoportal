@@ -1,11 +1,12 @@
 """
 Panele portalu mapowego (1_portal_mapowy_wisl.py) w prawym górnym rogu:
 
-- "Warstwy" (PanelWarstw): podkład, granice oraz sekcja "Wyniki WISL" -
-  kartogram wskaźnika z przełączaniem podziału (RDLP - lasy w zarządzie
-  PGL LP / województwa / krainy przyrodniczo-leśne - lasy wszystkich form
-  własności) i cykli WISL;
-- "Analizy KDE" (portal_kde.PanelKDE) - pod nim, w tym samym stylu.
+- "Warstwy" (PanelWarstw): podkład i granice;
+- "Wyniki WISL" (też PanelWarstw, osobny panel pod "Warstwy") - kartogram
+  wskaźnika z przełączaniem podziału (RDLP - lasy w zarządzie PGL LP /
+  województwa / krainy przyrodniczo-leśne - lasy wszystkich form własności)
+  i cykli WISL;
+- "Analizy KDE" (portal_kde.PanelKDE) - pod nimi, w tym samym stylu.
 
 Wspólny wygląd paneli: StylPaneli (dodawany raz, przez dodaj_styl_paneli).
 
@@ -433,7 +434,21 @@ class PanelWarstw(MacroElement):
             nakladki.map(function(n, i) {
                 return '<label><input type="checkbox" data-nakladka="' + i + '">' + n.nazwa + '</label>';
             }).join('') + '</div>' +
-            '<div class="panel-sekcja">Wyniki WISL</div>' +
+            '</div>';
+        L.DomEvent.disableClickPropagation(d);
+        L.DomEvent.disableScrollPropagation(d);
+        return d;
+    };
+
+    // --- Panel "Wyniki WISL" (pod "Warstwy", nad "Analizy KDE") -----------
+    // Ten sam układ co panel KDE: lista -> wybór podziału -> cykl -> legenda.
+    var panelWyniki = L.control({ position: 'topright' });
+    panelWyniki.onAdd = function() {
+        var d = L.DomUtil.create('div', 'panel-wisl');
+        d.innerHTML =
+            '<div class="panel-naglowek"><h4>Wyniki WISL</h4><span class="zwin" title="Zwiń / rozwiń">▾</span></div>' +
+            '<div class="panel-tresc">' +
+            '<label class="pole" for="war-wskaznik">Wskaźnik</label>' +
             '<select id="war-wskaznik"><option value="">— wyłączone —</option>' +
             D.wskazniki.map(function(w) {
                 return '<option value="' + w.id + '">' + w.nazwa + ' [' + w.jednostka + ']</option>';
@@ -441,7 +456,8 @@ class PanelWarstw(MacroElement):
             // przełącznik podziału (i zakres danych) dopiero po wybraniu
             // wskaźnika - pod listą, żeby lista nie przeskakiwała przy wyborze
             '<div id="war-wybor" style="display:none">' +
-            '<div class="panel-okresy" id="war-podzialy" style="margin-top:6px">' + podzialy.map(function(j) {
+            '<label class="pole">Podział</label><div class="panel-okresy" id="war-podzialy">' +
+            podzialy.map(function(j) {
                 return '<button type="button" data-podzial="' + j + '">' + J[j].przycisk + '</button>';
             }).join('') + '</div>' +
             '<div class="panel-zakres" id="war-zakres"></div>' +
@@ -460,6 +476,7 @@ class PanelWarstw(MacroElement):
         return d;
     };
     panel.addTo(map);
+    panelWyniki.addTo(map);
     var kontener = panel.getContainer();
     var el = function(id) { return document.getElementById(id); };
     function checkbox(j) {
@@ -503,9 +520,11 @@ class PanelWarstw(MacroElement):
         el('war-opis').innerHTML = w.opis + '<br>Źródło: ' + o.zrodlo + '.';
     }
 
-    kontener.querySelector('.panel-naglowek').addEventListener('click', function() {
-        kontener.classList.toggle('zwiniety');
-        kontener.querySelector('.zwin').textContent = kontener.classList.contains('zwiniety') ? '▸' : '▾';
+    [kontener, panelWyniki.getContainer()].forEach(function(k) {
+        k.querySelector('.panel-naglowek').addEventListener('click', function() {
+            k.classList.toggle('zwiniety');
+            k.querySelector('.zwin').textContent = k.classList.contains('zwiniety') ? '▸' : '▾';
+        });
     });
     kontener.querySelectorAll('input[name="war-podklad"]').forEach(function(r) {
         r.addEventListener('change', function() { ustawPodklad(parseInt(this.value)); });

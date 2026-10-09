@@ -534,8 +534,8 @@ def zbuduj_katalog(katalog_bazowy='.'):
 # tworzony jest dopiero przy pierwszym wyborze warstwy (i zapamiętywany).
 # Warstwy KDE rysowane są w osobnym panelu Leaflet (z-index 450) - nad
 # warstwami administracyjnymi i kartogramami RDLP (overlayPane, 400).
-# Panel stoi w prawym górnym rogu pod panelem "Warstwy" (portal_warstwy.py),
-# z którym dzieli styl (StylPaneli).
+# Panel stoi w prawym górnym rogu pod panelami "Warstwy" i "Wyniki WISL" (portal_warstwy.py),
+# z którymi dzieli styl (StylPaneli).
 
 PLIK_DANYCH_JS = 'kde_warstwy.js'
 

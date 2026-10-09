@@ -20,7 +20,8 @@ from portal_warstwy import dodaj_panel_warstw
 # KDE_uszkodzenia_ryzyko) - przed zbudowaniem portalu trzeba je przeliczyć.
 # Wybiera się je w panelu "Analizy KDE" (portal_kde.py).
 #
-# Podkład, granice i wyniki WISL - panel "Warstwy" (portal_warstwy.py):
+# Podkład i granice - panel "Warstwy", wyniki WISL - panel "Wyniki WISL"
+# (oba w portal_warstwy.py):
 # kartogram RDLP z przełączaniem cykli (data.WISL_RDLP) oraz popupy z wynikami
 # i wykresem zasobności po kliknięciu RDLP, krainy albo województwa
 # (data.WISL_KRAINY, data.WISL_WOJEWODZTWA). Oba panele stoją w prawym
@@ -181,14 +182,14 @@ nadlsearch = Search(
 ).add_to(m)
 
 #RDLP, krainy przyrodniczo-leśne, województwa - granice z popupami wyników
-# WISL (i kartogramem RDLP) rysuje panel "Warstwy" (portal_warstwy.py)
+# WISL (i kartogramem) rysuje portal_warstwy.py (panele "Warstwy" i "Wyniki WISL")
 
 rdlp_granice = uprosc_warstwe(gpd.read_file('data/rdlp.geojson'))
 krainy = uprosc_warstwe(gpd.read_file('data/krainy.geojson'))
 wojewodztwa = uprosc_warstwe(gpd.read_file('data/wojewodztwa.geojson'))
 
 #################################################
-# Panele w prawym górnym rogu: "Warstwy", pod nim "Analizy KDE"
+# Panele w prawym górnym rogu: "Warstwy", "Wyniki WISL", pod nimi "Analizy KDE"
 # (kolejność dodania = kolejność w rogu, pod wyszukiwarką nadleśnictw)
 #################################################
 dodaj_panel_warstw(
