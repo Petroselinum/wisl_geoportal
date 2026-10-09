@@ -23,11 +23,11 @@ from scipy.stats import gaussian_kde
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
 from kde_common import (
+    dodaj_podklad,
     wymus_wspolne_pasmo,
     kontur_na_zasieg,
     etykietuj_kontury,
 )
-import contextily as cx
 
 CRS_OBLICZENIOWY = "EPSG:2180"
 CRS_ZAPISU = "EPSG:4326"
@@ -187,10 +187,7 @@ def mapa_sredniej(df, rok_start, rok_end, progi, kolory_progow, *, jednostka, ty
                     xytext=(0, -40), textcoords="offset points", fontsize=8, color="#555555",
                     va="top", ha="left", annotation_clip=False)
 
-    try:
-        cx.add_basemap(ax, crs=poland.crs, source=cx.providers.Esri.WorldGrayCanvas, alpha=1, zoom=8)
-    except Exception:
-        pass
+    dodaj_podklad(ax, poland.crs)
 
     # Legenda: PRZEDZIAŁY (contourf koloruje rozłączne pasma), najwyższe pasmo
     # z maksimum wygładzonej powierzchni - jak w kde_zasobnosc.py

@@ -4,6 +4,17 @@ from matplotlib import patheffects
 import shapely
 from shapely.geometry import Polygon
 from scipy.signal import fftconvolve
+import rasterio
+from rasterio.transform import from_bounds
+from rasterio.warp import reproject, Resampling
+
+# Podkład map PNG zamiast kafelków Esri WorldGrayCanvas (warunki Esri nie
+# pozwalają rozpowszechniać ich kafelków, a mapy PNG są do pobrania
+# w portalu). Raster RGB, WGS 84, 1' (ok. 1,1 x 1,85 km nad Polską), Europa
+# 36,4°W-82,4°E, 33,5-71,3°N - hipsometria z cieniowaniem rzeźby, wody
+# i rzeki (wygląda jak Natural Earth I/II, domena publiczna).
+PODKLAD_TIF = 'data/europa.tif'
+PODKLAD_PODPIS = 'Podkład: Natural Earth'
 
 
 def kontur_na_zasieg(segs):
@@ -43,8 +54,9 @@ def etykietuj_kontury(ax, progi, zasiegi_geom, granica_polski, tekst_progu, kolo
 
     Pomijane są pętle, na których napis byłby nieczytelny:
     - pole wnętrza < MIN_POWIERZCHNIA (znikome strzępki zasięgu),
-    - obwód < MIN_OBWOD_W_ETYKIETACH x długość napisu - na krótkiej pętli
-      napis zawija się wokół niej i nachodzi sam na siebie.
+    - obwód < MIN_OBWOD_W_ETYKIETACH x długość napisu (z zapasem 1,8 z
+      dlugosc_tekstu_w_danych) - na krótkiej pętli napis zawija się wokół
+      niej i nachodzi sam na siebie.
     Punkty kotwiczące leżą dalej niż BORDER_TOL od granicy Polski (etykieta
     nie może wyglądać jak opis granicy kraju), wybierane zachłannie od
     najdalszego od granicy, w odstępach co najmniej MIN_ODSTEP.
@@ -52,7 +64,12 @@ def etykietuj_kontury(ax, progi, zasiegi_geom, granica_polski, tekst_progu, kolo
     tekst_progu: funkcja prog -> napis etykiety.
     """
     MIN_POWIERZCHNIA = 3e8         # m^2 (300 km^2)
-    MIN_OBWOD_W_ETYKIETACH = 4     # obwód pętli / długość napisu (z zapasem na krzywiznę)
+    # obwód pętli / długość napisu z zapasem 1,8, czyli ok. 2,5 x sam napis
+    # (napis zajmuje najwyżej ~40% pętli). Dawne 4 (= 7,2 x napis, ok. 430 km
+    # przy "> 10 m³/ha/rok") zostawiało bez etykiet obszary 4-9 tys. km2 -
+    # sprawdzone 2026-10-09 na przyroście, użytkowaniu i martwym drewnie:
+    # 85 z 439 pętli z etykietą, po zmianie 161.
+    MIN_OBWOD_W_ETYKIETACH = 1.4
     BORDER_TOL = 15_000            # m
     MIN_ODSTEP = 150_000           # m
 
@@ -351,3 +368,44 @@ def korekta_brzegowa(mask, x_grid, y_grid, covariance):
     # daleko od obszaru maska*jądro ~ 0 - zabezpieczenie przed dzieleniem
     # przez ~0 (i tak odcięte później przez maskę Polski na Z)
     return np.clip(c, 1e-3, 1.0)
+
+
+def dodaj_podklad(ax, crs, szary=True, rozjasnienie=0.65, rozdzielczosc_px=2500,
+                  plik=PODKLAD_TIF, podpis=PODKLAD_PODPIS):
+    """
+    Rysuje podkład z rastra `plik` pod wszystkimi warstwami osi (zorder 0),
+    w zasięgu BIEŻĄCYCH granic osi - wywoływać po ax.set_xlim/set_ylim, jak
+    wcześniej contextily.add_basemap. Raster jest przeliczany do `crs` osi
+    (np. EPSG:2180) na siatkę rozdzielczosc_px po dłuższym boku, interpolacja
+    dwuliniowa (raster jest ok. 5x grubszy niż piksel mapy PNG 300 dpi).
+
+    szary=True - odcienie szarości (luminancja) rozjaśnione o `rozjasnienie`
+        (0 = bez zmian, 1 = biel), żeby barwne pasma KDE czytały się jak na
+        dawnym szarym podkładzie - wariant wybrany przez użytkownika na stałe
+        (2026-10-09). Przy 0,35 szare punkty traktów (gray, alpha 0.3) ginęły
+        w teksturze cieniowania rzeźby; 0,7 było już czytelne, użytkownik
+        wybrał odrobinę ciemniejsze 0,65; False - kolory oryginalne.
+    podpis - tekst w lewym dolnym rogu osi (jak atrybucja kafelków); None = brak.
+    """
+    xmin, xmax = ax.get_xlim()
+    ymin, ymax = ax.get_ylim()
+    skala = rozdzielczosc_px / max(xmax - xmin, ymax - ymin)
+    szer, wys = max(1, round((xmax - xmin) * skala)), max(1, round((ymax - ymin) * skala))
+    obraz = np.zeros((3, wys, szer), dtype=np.uint8)
+    with rasterio.open(plik) as src:
+        for i in range(3):
+            reproject(rasterio.band(src, i + 1), obraz[i],
+                      dst_transform=from_bounds(xmin, ymin, xmax, ymax, szer, wys),
+                      dst_crs=crs, resampling=Resampling.bilinear)
+    obraz = np.moveaxis(obraz, 0, -1).astype(float) / 255
+    if szary:
+        jasnosc = obraz @ np.array([0.299, 0.587, 0.114])
+        obraz = np.repeat(jasnosc[..., None], 3, axis=2)
+    obraz = obraz + (1 - obraz) * rozjasnienie
+    ax.imshow(obraz, extent=(xmin, xmax, ymin, ymax), origin='upper', zorder=0,
+              interpolation='bilinear')
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    if podpis:
+        ax.text(0.005, 0.005, podpis, transform=ax.transAxes, fontsize=6,
+                color='#333333', ha='left', va='bottom', zorder=10)

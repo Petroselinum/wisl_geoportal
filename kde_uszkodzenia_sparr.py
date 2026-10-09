@@ -6,9 +6,9 @@ from matplotlib import patches as mpatches
 from matplotlib import lines as mlines
 import pandas as pd
 import geopandas as gpd
-import contextily as cx
 from shapely.geometry import Polygon
 
+from kde_common import dodaj_podklad
 from Wisl_quert import query_drzewostany_uszk, PRZYCZYNY_USZK
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
@@ -298,10 +298,7 @@ def uszkodzenia(rok_start: int, rok_end: int, prog_nasil_uszk: int = None, gatun
     ax.set_ylabel("Y [m] (EPSG:2180)")
     ax.ticklabel_format(style='plain', useOffset=False)
 
-    try:
-        cx.add_basemap(ax, crs=poland.crs, source=cx.providers.Esri.WorldGrayCanvas, alpha=1, zoom=8)
-    except Exception:
-        pass
+    dodaj_podklad(ax, poland.crs)
 
     legend_elements = ([
         mpatches.Patch(facecolor='#ff7f00', edgecolor='#8b0000', linewidth=1.5, alpha=0.6, label='Istotne ryzyko (p < 0.05)'),

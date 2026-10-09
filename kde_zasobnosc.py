@@ -11,11 +11,11 @@ from Wisl_quert import query_zasobnosc, query_zasobnosc_gat
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
 from kde_common import (
+    dodaj_podklad,
     wymus_wspolne_pasmo,
     kontur_na_zasieg,
     etykietuj_kontury,
 )
-import contextily as cx
 
 # Układ obliczeniowy i wyświetlania: PUWG92 (EPSG:2180) - metryczny
 CRS_OBLICZENIOWY = "EPSG:2180"
@@ -294,10 +294,7 @@ def zasobnosc_mapa(rok_start: int = 2020, rok_end: int = 2025,
     ax.set_ylabel("Y [m] (EPSG:2180)")
     ax.ticklabel_format(style='plain', useOffset=False)
 
-    try:
-        cx.add_basemap(ax, crs=poland.crs, source=cx.providers.Esri.WorldGrayCanvas, alpha=1, zoom=8)
-    except Exception:
-        pass
+    dodaj_podklad(ax, poland.crs)
 
     # Etykiety legendy opisują PRZEDZIAŁY - contourf koloruje rozłączne pasma.
     # Etykiety przy liniach konturu zostają progowe ("> 300 m³/ha"), bo linia

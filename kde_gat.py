@@ -9,13 +9,13 @@ import shapely
 from scipy.stats import gaussian_kde
 from Wisl_quert import query_udzial_gat, query_tlo_lasu, query_mlode_uprawy
 from kde_common import (
+    dodaj_podklad,
     wymus_wspolne_pasmo,
     kontur_na_zasieg,
     etykietuj_kontury,
 )
 from matplotlib_map_utils.core.north_arrow import north_arrow
 from matplotlib_map_utils.core.scale_bar import scale_bar
-import contextily as cx
 
 # Układ obliczeniowy i wyświetlania: PUWG92 (EPSG:2180) - metryczny
 CRS_OBLICZENIOWY = "EPSG:2180"
@@ -474,7 +474,7 @@ def plot_kde_for_species(gat, rok_start=2020, rok_end=2025, drzewostany=True, mi
     ax.set_ylabel("Y [m] (PUWG92 / EPSG:2180)")
     ax.ticklabel_format(style='plain', useOffset=False)
 
-    cx.add_basemap(ax, crs=poland.crs, source=cx.providers.Esri.WorldGrayCanvas, alpha=1, zoom=8)
+    dodaj_podklad(ax, poland.crs)
 
     # ==============================================================================
     # 8. LEGENDA (PROXY ARTISTS)
